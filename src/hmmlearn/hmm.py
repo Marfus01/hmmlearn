@@ -12,10 +12,12 @@ from sklearn.utils import check_random_state
 from . import _emissions, _utils
 from .base import BaseHMM
 from .utils import fill_covars, normalize
+from .nested_hmm import NestedHMM
 
 
 __all__ = [
     "GMMHMM", "GaussianHMM", "CategoricalHMM", "MultinomialHMM", "PoissonHMM",
+    "NestedHMM",
 ]
 
 

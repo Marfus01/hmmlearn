@@ -27,6 +27,99 @@ def _make_wrapper(func):
     return functools.wraps(func)(lambda *args, **kwargs: func(*args, **kwargs))
 
 
+class BaseNestedHMM(_AbstractHMM):
+    """嵌套HMM的基础类，处理特殊的观测数据格式"""
+    
+    def __init__(self, n_actors, **kwargs):
+        super().__init__(n_actors, **kwargs)
+        self.n_actors = n_actors
+        self.n_face_states = 2 ** n_actors
+
+    def _check_and_set_n_features(self, X_1, X_2):
+        """验证嵌套HMM数据格式并设置特征数"""
+        if X_1.shape != X_2.shape:
+            raise ValueError(f"X_1 and X_2 must have the same shape, got {X_1.shape} and {X_2.shape}")
+        
+        if X_1.shape[1] != self.n_actors:
+            raise ValueError(f"Expected {self.n_actors} actors, got {X_1.shape}")
+            
+        # 检查X_1是one-hot编码
+        if not np.allclose(X_1.sum(axis=1), 1):
+            raise ValueError("X_1 must be one-hot encoded (each row sums to 1)")
+        
+        # 检查X_2是二进制数据
+        if not np.all(np.isin(X_2, [0, 1])):
+            raise ValueError("X_2 must contain only binary values (0 or 1)")
+        
+        self.n_features = self.n_actors
+        
+    def _enumerate_face_configs(self):
+        """枚举所有可能的面部配置"""
+        face_configs = []
+        for i in range(self.n_face_states):
+            config = []
+            for j in range(self.n_actors):
+                config.append((i >> j) & 1)
+            face_configs.append(tuple(config))
+        return face_configs
+    
+    def _init_params(self):
+        """初始化嵌套HMM的参数"""
+        if 'a' in self.init_params:
+            # 初始化 alpha (面部出现的初始概率)
+            self.alpha_ = np.random.uniform(0.3, 0.7, self.n_actors)
+            
+        if 'b' in self.init_params:
+            # 初始化 A_F (面部状态转移矩阵)
+            self.A_F_ = np.zeros((self.n_actors, 2, 2))
+            for actor in range(self.n_actors):
+                self.A_F_[actor] = np.random.dirichlet([1, 1], size=2)
+                
+        if 'c' in self.init_params:
+            # 初始化 beta (说话人初始概率的logits)
+            self.beta_ = np.random.normal(0, 1, self.n_actors)
+            
+        if 'd' in self.init_params:
+            # 初始化 gamma1 (面部对说话人初始状态的影响)
+            self.gamma1_ = np.random.uniform(0.5, 2.0)
+            
+        if 'e' in self.init_params:
+            # 初始化 A_S (说话人状态转移矩阵的logits)
+            self.A_S_ = np.random.normal(0, 1, (self.n_actors, self.n_actors))
+            
+        if 'f' in self.init_params:
+            # 初始化 gamma2 (面部对说话人转移的影响)
+            self.gamma2_ = np.random.uniform(0.5, 2.0)
+            
+        if 'g' in self.init_params:
+            # 初始化 B_F (面部识别混淆矩阵)
+            self.B_F_ = np.zeros((self.n_actors, 2, 2))
+            for actor in range(self.n_actors):
+                # 对角线元素较大，表示较好的识别准确率
+                confusion = np.array([[0.8, 0.2], [0.2, 0.8]])
+                self.B_F_[actor] = confusion
+                
+        if 'h' in self.init_params:
+            # 初始化 B_S (说话人识别混淆矩阵)
+            self.B_S_ = np.random.dirichlet([5, 1, 1, 1, 1], size=self.n_actors)[:, :self.n_actors]
+            # 确保对角线元素较大
+            for i in range(self.n_actors):
+                self.B_S_[i, i] += 2
+                self.B_S_[i] /= self.B_S_[i].sum()
+    
+    def _check(self):
+        """检查参数有效性"""
+        if not hasattr(self, 'alpha_'):
+            self._init_params()
+            
+        # 参数有效性检查
+        self.alpha_ = np.asarray(self.alpha_)
+        if len(self.alpha_) != self.n_actors:
+            raise ValueError("alpha_ must have shape (n_actors,)")
+        if not np.all((0 <= self.alpha_) & (self.alpha_ <= 1)):
+            raise ValueError("alpha_ must be in [0, 1]")
+
+
 class BaseCategoricalHMM(_AbstractHMM):
 
     def __init_subclass__(cls):
