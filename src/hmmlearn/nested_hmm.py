@@ -30,20 +30,24 @@ class NestedHMM(_AbstractHMM):
     
     def __init__(self, n_actors, n_iter=100, tol=1e-2, verbose=False,
                  params="abcdefg", init_params="abcdefg", random_state=None):
-        self.n_actors = n_actors
-        self.n_face_states = 2 ** n_actors
-        self.n_iter = n_iter
-        self.tol = tol
-        self.verbose = verbose
-        self.params = params
-        self.init_params = init_params
+        self.n_actors = n_actors    # 演员数量
+        self.n_face_states = 2 ** n_actors  # 面部状态数量 (每个演员有2个状态)
+        self.n_iter = n_iter    # 最大迭代次数
+        self.tol = tol  # 收敛阈值
+        self.verbose = verbose  # 是否打印详细信息
+        self.params = params    # 控制哪些参数被更新
+        self.init_params = init_params  # 控制哪些参数被初始化
         self.random_state = random_state
         
         # 创建监控器
         self.monitor_ = ConvergenceMonitor(tol, n_iter, verbose)
 
     def _check_and_set_n_features(self, X_1, X_2):
-        """验证嵌套HMM数据格式并设置特征数"""
+        """
+        验证嵌套HMM数据格式，要求
+        - X_1: 说话人观测，one-hot编码，形状 (n_samples, n_actors)
+        - X_2: 面部出现，二进制数据，形状 (n_samples, n_actors)
+        """
         if X_1.shape != X_2.shape:
             raise ValueError(f"X_1 and X_2 must have the same shape, got {X_1.shape} and {X_2.shape}")
         
@@ -59,7 +63,9 @@ class NestedHMM(_AbstractHMM):
             raise ValueError("X_2 must contain only binary values (0 or 1)")
 
     def _validate_lengths(self, X, lengths):
-        """验证序列长度"""
+        """
+        验证序列长度，要求lengths元素之和等于X的样本数
+        """
         if lengths is None:
             return [len(X)]
         
@@ -84,40 +90,41 @@ class NestedHMM(_AbstractHMM):
         random_state = check_random_state(self.random_state)
         
         if 'a' in self.init_params:
-            # α: 面部出现的初始概率
+            # α: 对于每个 actor，其面部出现的初始概率，不要求和为1
             self.alpha_ = random_state.uniform(0.3, 0.7, self.n_actors)
             
         if 'b' in self.init_params:
-            # A_F: 面部状态转移矩阵 (n_actors, 2, 2)
+            # A_F: 面部状态转移矩阵 (n_actors, 2, 2), 每行和为1
             self.A_F_ = np.zeros((self.n_actors, 2, 2))
             for actor in range(self.n_actors):
                 for s in range(2):
-                    self.A_F_[actor, s] = random_state.dirichlet([1, 1])
-                
+                    self.A_F_[actor, s] = random_state.dirichlet([2, 1] if s == 0 else [1, 2])
+
         if 'c' in self.init_params:
-            # β: 说话人初始概率的logits
+            # β: 说话人初始概率的logits,不要求和为1
             self.beta_ = random_state.normal(0, 1, self.n_actors)
             
         if 'd' in self.init_params:
             # γ₁: 面部对说话人初始状态的影响
-            self.gamma1_ = random_state.uniform(0.5, 2.0)
+            self.gamma1_ = random_state.uniform(0.5, 2.0, 1)
             
         if 'e' in self.init_params:
-            # A_S: 说话人状态转移矩阵的logits (n_actors, n_actors)
-            self.A_S_ = random_state.normal(0, 1, (self.n_actors, self.n_actors))
+            # A_S: 说话人状态转移矩阵的logits (n_actors, n_actors),不要求和为1
+            diag_main = np.diag(random_state.uniform(0.3, 0.7, self.n_actors))
+            self.A_S_ = diag_main + (1-diag_main) * random_state.normal(0, 1, (self.n_actors, self.n_actors))
             
         if 'f' in self.init_params:
             # γ₂: 面部对说话人转移的影响
-            self.gamma2_ = random_state.uniform(0.5, 2.0)
+            self.gamma2_ = random_state.uniform(0.5, 2.0, 1)
             
         if 'g' in self.init_params:
-            # B_F: 面部识别混淆矩阵 (n_actors, 2, 2)
+            # B_F: 面部识别混淆矩阵 (n_actors, 2, 2), 每行和为1
             self.B_F_ = np.zeros((self.n_actors, 2, 2))
             for actor in range(self.n_actors):
                 for s in range(2):
                     self.B_F_[actor, s] = random_state.dirichlet([2, 1] if s == 0 else [1, 2])
-            
-            # B_S: 说话人识别混淆矩阵 (n_actors, n_actors)
+
+            # B_S: 说话人识别混淆矩阵 (n_actors, n_actors), 每行和为1
             self.B_S_ = np.zeros((self.n_actors, self.n_actors))
             for actor in range(self.n_actors):
                 self.B_S_[actor] = random_state.dirichlet([2 if i == actor else 1 for i in range(self.n_actors)])
