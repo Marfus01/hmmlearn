@@ -6,6 +6,13 @@ from sklearn.utils import check_random_state
 from .base import _AbstractHMM, ConvergenceMonitor
 from .utils import normalize, log_normalize
 
+# NOTE
+## 1. 目前EM算法完全在 python 中实现，涉及多层循环，效率较低，后续可以考虑用 Cython 优化
+## 2. 存储 U, V 矩阵的尺寸较大，有可能导致内存不足
+## 3. 目前没有用到 hmmc.cpp中的logaddexp，可能会有数值稳定性问题
+## 4. 目前的predict方法效果未经验证
+
+
 class NestedHMM(_AbstractHMM):
     """
     嵌套隐马尔可夫模型
@@ -384,8 +391,10 @@ class NestedHMM(_AbstractHMM):
                 for f_idx, face_config in enumerate(face_configs):
                     for speaker in range(self.n_actors):
                         weight = gamma[f_idx, speaker]
+                        # NOTE: 计算效率待优化，可以仅对 face_config 中为 1 的位置做 for 循环
                         for actor in range(self.n_actors):
                             if face_config[actor] == 1:
+                                # 对应 $\bbE\left[\bbN(F_{\cdot,1,\varrho}=1\vert \btheta^{(s)})\right]$ 中，指定 i 时两层求和的过程
                                 stats['face_initial_counts'][actor] += weight
                         
                         # 存储用于说话人初始概率优化的信息
