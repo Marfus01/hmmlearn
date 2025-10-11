@@ -121,327 +121,7 @@ class NestedHMM(_AbstractHMM):
             self.B_S_ = np.zeros((self.n_actors, self.n_actors))
             for actor in range(self.n_actors):
                 self.B_S_[actor] = random_state.dirichlet([2 if i == actor else 1 for i in range(self.n_actors)])
-
-    def _compute_log_likelihood(self, X_1, X_2, lengths):
-        """计算对数似然"""
-        # 将X_1转换为标签格式
-        S_hat = np.argmax(X_1, axis=1)
-        
-        # 枚举所有面部配置
-        face_configs = self._enumerate_face_configs()
-        
-        log_prob = 0.0
-        start_idx = 0
-        
-        for length in lengths:
-            end_idx = start_idx + length
-            S_hat_seq = S_hat[start_idx:end_idx]
-            F_hat_seq = X_2[start_idx:end_idx]
-            
-            # 前向算法计算该序列的似然
-            forward_probs = self._forward(F_hat_seq, S_hat_seq, face_configs)
-            seq_log_prob = logsumexp(forward_probs[-1].flatten())
-            log_prob += seq_log_prob
-            
-            start_idx = end_idx
-            
-        return log_prob
-
-    def _forward(self, F_hat_seq, S_hat_seq, face_configs):
-        """前向算法"""
-        T = len(F_hat_seq)
-        n_states = len(face_configs) * self.n_actors
-        
-        # 初始化前向概率矩阵
-        forward_probs = np.zeros((T, len(face_configs), self.n_actors))
-        
-        # t=1的初始化
-        for f_idx, f in enumerate(face_configs):
-            for speaker in range(self.n_actors):
-                # P(F₁) * P(S₁|F₁) * P(F̂₁|F₁) * P(Ŝ₁|S₁)
-                log_prob = 0.0
-                
-                # P(F₁) = ∏ᵨ Bernoulli(F₁ᵨ|αᵨ)
-                for actor in range(self.n_actors):
-                    if f[actor] == 1:
-                        log_prob += np.log(self.alpha_[actor])
-                    else:
-                        log_prob += np.log(1 - self.alpha_[actor])
-                
-                # P(S₁|F₁) = Multinomial(S₁|β_ω₁)
-                logits = self.beta_ + self.gamma1_ * np.array(f)
-                log_prob += logits[speaker] - logsumexp(logits)
-                
-                # P(F̂₁|F₁) = ∏ᵨ B_F[ᵨ](F₁ᵨ, F̂₁ᵨ)
-                for actor in range(self.n_actors):
-                    log_prob += np.log(self.B_F_[actor, f[actor], F_hat_seq[0, actor]])
-                
-                # P(Ŝ₁|S₁) = B_S(S₁, Ŝ₁)
-                log_prob += np.log(self.B_S_[speaker, S_hat_seq[0]])
-                
-                forward_probs[0, f_idx, speaker] = log_prob
-        
-        # 递推计算t=2,...,T
-        for t in range(1, T):
-            for f_idx, f in enumerate(face_configs):
-                for speaker in range(self.n_actors):
-                    log_prob = -np.inf
-                    
-                    for prev_f_idx, prev_f in enumerate(face_configs):
-                        for prev_speaker in range(self.n_actors):
-                            # P(Fₜ|Fₜ₋₁)
-                            trans_log_prob = 0.0
-                            for actor in range(self.n_actors):
-                                trans_log_prob += np.log(self.A_F_[actor, prev_f[actor], f[actor]])
-                            
-                            # P(Sₜ|Sₜ₋₁, Fₜ)
-                            logits = self.A_S_[prev_speaker] + self.gamma2_ * np.array(f)
-                            trans_log_prob += logits[speaker] - logsumexp(logits)
-                            
-                            # P(F̂ₜ|Fₜ)
-                            for actor in range(self.n_actors):
-                                trans_log_prob += np.log(self.B_F_[actor, f[actor], F_hat_seq[t, actor]])
-                            
-                            # P(Ŝₜ|Sₜ)
-                            trans_log_prob += np.log(self.B_S_[speaker, S_hat_seq[t]])
-                            
-                            # 累加前向概率
-                            log_prob = np.logaddexp(log_prob, 
-                                                  forward_probs[t-1, prev_f_idx, prev_speaker] + trans_log_prob)
-                    
-                    forward_probs[t, f_idx, speaker] = log_prob
-        
-        return forward_probs
-
-    def _backward(self, F_hat_seq, S_hat_seq, face_configs):
-        """后向算法"""
-        T = len(F_hat_seq)
-        backward_probs = np.zeros((T, len(face_configs), self.n_actors))
-        
-        # 初始化最后一个时间步
-        backward_probs[T-1] = 0.0  # log(1) = 0
-        
-        # 递推计算t=T-1,...,1
-        for t in range(T-2, -1, -1):
-            for f_idx, f in enumerate(face_configs):
-                for speaker in range(self.n_actors):
-                    log_prob = -np.inf
-                    
-                    for next_f_idx, next_f in enumerate(face_configs):
-                        for next_speaker in range(self.n_actors):
-                            # P(Fₜ₊₁|Fₜ)
-                            trans_log_prob = 0.0
-                            for actor in range(self.n_actors):
-                                trans_log_prob += np.log(self.A_F_[actor, f[actor], next_f[actor]])
-                            
-                            # P(Sₜ₊₁|Sₜ, Fₜ₊₁)
-                            logits = self.A_S_[speaker] + self.gamma2_ * np.array(next_f)
-                            trans_log_prob += logits[next_speaker] - logsumexp(logits)
-                            
-                            # P(F̂ₜ₊₁|Fₜ₊₁)
-                            for actor in range(self.n_actors):
-                                trans_log_prob += np.log(self.B_F_[actor, next_f[actor], F_hat_seq[t+1, actor]])
-                            
-                            # P(Ŝₜ₊₁|Sₜ₊₁)
-                            trans_log_prob += np.log(self.B_S_[next_speaker, S_hat_seq[t+1]])
-                            
-                            # 累加后向概率
-                            log_prob = np.logaddexp(log_prob,
-                                                  trans_log_prob + backward_probs[t+1, next_f_idx, next_speaker])
-                    
-                    backward_probs[t, f_idx, speaker] = log_prob
-        
-        return backward_probs
-
-    def _compute_expectations(self, X_1, X_2, lengths):
-        """计算E步所需的期望值"""
-        # 初始化期望计数
-        exp_counts = {
-            'F_initial': np.zeros(self.n_actors),  # E[N(F·,1,ρ=1)]
-            'F_trans': np.zeros((self.n_actors, 2, 2)),  # E[N(F·,·-1,ρ=δ, F·,·,ρ=δ')]
-            'FS_initial': np.zeros((self.n_face_states, self.n_actors)),  # E[N(F·,1,·=f, S·,1=ρ)]
-            'FSS_trans': np.zeros((self.n_face_states, self.n_actors, self.n_actors)),  # E[N(F·,·,·=f, S·,·-1=ρ, S·,·=ρ')]
-            'F_emission': np.zeros((self.n_actors, 2, 2)),  # E[N(F·,·,ρ=δ, F̂·,·,ρ=δ')]
-            'S_emission': np.zeros((self.n_actors, self.n_actors)),  # E[N(S·,·=ρ, Ŝ·,·=ρ')]
-        }
-        
-        S_hat = np.argmax(X_1, axis=1)
-        face_configs = self._enumerate_face_configs()
-        
-        start_idx = 0
-        for length in lengths:
-            end_idx = start_idx + length
-            S_hat_seq = S_hat[start_idx:end_idx]
-            F_hat_seq = X_2[start_idx:end_idx]
-            
-            # 计算前向后向概率
-            forward_probs = self._forward(F_hat_seq, S_hat_seq, face_configs)
-            backward_probs = self._backward(F_hat_seq, S_hat_seq, face_configs)
-            
-            # 计算序列总概率
-            seq_log_prob = logsumexp(forward_probs[-1].flatten())
-            
-            # 计算各种期望
-            self._accumulate_expectations(exp_counts, forward_probs, backward_probs, 
-                                        F_hat_seq, S_hat_seq, face_configs, seq_log_prob)
-            
-            start_idx = end_idx
-        
-        return exp_counts
-
-    def _accumulate_expectations(self, exp_counts, forward_probs, backward_probs, 
-                               F_hat_seq, S_hat_seq, face_configs, seq_log_prob):
-        """累积期望计数"""
-        T = len(F_hat_seq)
-        
-        # 计算 gamma(t, f, s) = P(F_t=f, S_t=s | obs)
-        for t in range(T):
-            for f_idx, f in enumerate(face_configs):
-                for speaker in range(self.n_actors):
-                    gamma = np.exp(forward_probs[t, f_idx, speaker] + 
-                                 backward_probs[t, f_idx, speaker] - seq_log_prob)
-                    
-                    # 累积面部初始状态期望 (t=0)
-                    if t == 0:
-                        for actor in range(self.n_actors):
-                            if f[actor] == 1:
-                                exp_counts['F_initial'][actor] += gamma
-                        
-                        # 累积联合初始状态期望
-                        exp_counts['FS_initial'][f_idx, speaker] += gamma
-                    
-                    # 累积发射期望
-                    for actor in range(self.n_actors):
-                        exp_counts['F_emission'][actor, f[actor], F_hat_seq[t, actor]] += gamma
-                    
-                    exp_counts['S_emission'][speaker, S_hat_seq[t]] += gamma
-        
-        # 计算转移期望
-        for t in range(1, T):
-            for f_idx, f in enumerate(face_configs):
-                for speaker in range(self.n_actors):
-                    for prev_f_idx, prev_f in enumerate(face_configs):
-                        for prev_speaker in range(self.n_actors):
-                            # 计算 xi(t-1, t)
-                            log_xi = (forward_probs[t-1, prev_f_idx, prev_speaker] + 
-                                    backward_probs[t, f_idx, speaker] - seq_log_prob)
-                            
-                            # 添加转移概率
-                            for actor in range(self.n_actors):
-                                log_xi += np.log(self.A_F_[actor, prev_f[actor], f[actor]])
-                            
-                            logits = self.A_S_[prev_speaker] + self.gamma2_ * np.array(f)
-                            log_xi += logits[speaker] - logsumexp(logits)
-                            
-                            for actor in range(self.n_actors):
-                                log_xi += np.log(self.B_F_[actor, f[actor], F_hat_seq[t, actor]])
-                            
-                            log_xi += np.log(self.B_S_[speaker, S_hat_seq[t]])
-                            
-                            xi = np.exp(log_xi)
-                            
-                            # 累积面部转移期望
-                            for actor in range(self.n_actors):
-                                exp_counts['F_trans'][actor, prev_f[actor], f[actor]] += xi
-                            
-                            # 累积说话人转移期望
-                            exp_counts['FSS_trans'][f_idx, prev_speaker, speaker] += xi
-
-    def _update_parameters(self, exp_counts, m_sequences):
-        """M步：更新参数"""
-        if 'a' in self.params:
-            # 更新 α
-            self.alpha_ = exp_counts['F_initial'] / m_sequences
-        
-        if 'b' in self.params:
-            # 更新 A_F
-            for actor in range(self.n_actors):
-                for prev_state in range(2):
-                    total = exp_counts['F_trans'][actor, prev_state].sum()
-                    if total > 0:
-                        self.A_F_[actor, prev_state] = exp_counts['F_trans'][actor, prev_state] / total
-        
-        if 'g' in self.params:
-            # 更新 B_F
-            for actor in range(self.n_actors):
-                for true_state in range(2):
-                    total = exp_counts['F_emission'][actor, true_state].sum()
-                    if total > 0:
-                        self.B_F_[actor, true_state] = exp_counts['F_emission'][actor, true_state] / total
-            
-            # 更新 B_S
-            for true_speaker in range(self.n_actors):
-                total = exp_counts['S_emission'][true_speaker].sum()
-                if total > 0:
-                    self.B_S_[true_speaker] = exp_counts['S_emission'][true_speaker] / total
-        
-        # 数值优化更新 β, γ₁
-        if 'c' in self.params or 'd' in self.params:
-            self._optimize_initial_speaker_params(exp_counts)
-        
-        # 数值优化更新 A_S, γ₂
-        if 'e' in self.params or 'f' in self.params:
-            self._optimize_transition_speaker_params(exp_counts)
-
-    def _optimize_initial_speaker_params(self, exp_counts):
-        """数值优化 β 和 γ₁"""
-        face_configs = self._enumerate_face_configs()
-        
-        def objective(params):
-            beta = params[:self.n_actors]
-            gamma1 = params[self.n_actors]
-            
-            log_likelihood = 0.0
-            for f_idx, f in enumerate(face_configs):
-                for speaker in range(self.n_actors):
-                    count = exp_counts['FS_initial'][f_idx, speaker]
-                    if count > 0:
-                        logits = beta + gamma1 * np.array(f)
-                        log_prob = logits[speaker] - logsumexp(logits)
-                        log_likelihood += count * log_prob
-            
-            return -log_likelihood
-        
-        # 初始值
-        x0 = np.concatenate([self.beta_, [self.gamma1_]])
-        
-        # 优化
-        result = minimize(objective, x0, method='BFGS')
-        
-        if result.success:
-            self.beta_ = result.x[:self.n_actors]
-            self.gamma1_ = result.x[self.n_actors]
-
-    def _optimize_transition_speaker_params(self, exp_counts):
-        """数值优化 A_S 和 γ₂"""
-        face_configs = self._enumerate_face_configs()
-        
-        def objective(params):
-            A_S = params[:-1].reshape(self.n_actors, self.n_actors)
-            gamma2 = params[-1]
-            
-            log_likelihood = 0.0
-            for f_idx, f in enumerate(face_configs):
-                for prev_speaker in range(self.n_actors):
-                    for speaker in range(self.n_actors):
-                        count = exp_counts['FSS_trans'][f_idx, prev_speaker, speaker]
-                        if count > 0:
-                            logits = A_S[prev_speaker] + gamma2 * np.array(f)
-                            log_prob = logits[speaker] - logsumexp(logits)
-                            log_likelihood += count * log_prob
-            
-            return -log_likelihood
-        
-        # 初始值
-        x0 = np.concatenate([self.A_S_.flatten(), [self.gamma2_]])
-        
-        # 优化
-        result = minimize(objective, x0, method='BFGS')
-        
-        if result.success:
-            self.A_S_ = result.x[:-1].reshape(self.n_actors, self.n_actors)
-            self.gamma2_ = result.x[-1]
-
+ 
     def fit(self, X_1, X_2, lengths=None):
         """训练嵌套HMM模型"""
         X_1 = np.array(X_1)
@@ -452,47 +132,468 @@ class NestedHMM(_AbstractHMM):
         
         # 初始化参数
         self._init_params()
-        
-        # EM迭代
+        # 重置收敛监控器
         self.monitor_._reset()
         
+        # EM算法主循环
         for n_iter in range(self.n_iter):
-            # E步：计算期望
-            exp_counts = self._compute_expectations(X_1, X_2, lengths)
-            
-            # M步：更新参数
-            self._update_parameters(exp_counts, len(lengths))
-            
-            # 计算对数似然
-            curr_log_prob = self._compute_log_likelihood(X_1, X_2, lengths)
-            
+            # E步：计算前向后向概率和期望统计量
+            stats = self._do_estep(X_1, X_2, lengths)
+
             # 检查收敛
-            self.monitor_.history.append(curr_log_prob)
+            curr_loglik = stats['log_likelihood'] # 计算当前对数似然
+            self.monitor_.history.append(curr_loglik)
             self.monitor_.iter = n_iter
-            self.monitor_.report(curr_log_prob)
-            
+            self.monitor_.report(curr_loglik)
             if self.monitor_.converged:
                 break
         
+            # M步：更新参数
+            self._do_mstep(stats)
+
         return self
 
+    def _do_estep(self, X_1, X_2, lengths):
+        """E步：使用前向-后向算法计算期望统计量"""
+        stats = self._initialize_sufficient_statistics()
+        log_likelihood = 0.0
+        
+        start_idx = 0
+        for length in lengths:
+            end_idx = start_idx + length
+            
+            # 获取当前序列
+            seq_X1 = X_1[start_idx:end_idx]
+            seq_X2 = X_2[start_idx:end_idx]
+            
+            # 前向-后向算法
+            fwd_lattice = self._do_forward_pass(seq_X1, seq_X2)
+            bwd_lattice = self._do_backward_pass(seq_X1, seq_X2)
+            
+            # 计算序列对数似然
+            seq_loglik = logsumexp(fwd_lattice[-1])
+            log_likelihood += seq_loglik
+            
+            # 累积统计量
+            self._accumulate_sufficient_statistics(
+                stats, seq_X1, seq_X2, fwd_lattice, bwd_lattice, seq_loglik)
+            
+            start_idx = end_idx
+            
+        stats['log_likelihood'] = log_likelihood
+        return stats
+
+    def _do_forward_pass(self, X_1, X_2):
+        """前向算法计算前向概率"""
+        n_samples = len(X_1)
+        face_configs = self._enumerate_face_configs()
+        n_face_configs = len(face_configs)
+        
+        # fwd_lattice[t, f, s] = log P(观测到t时刻, 面部配置f, 说话人s)
+        fwd_lattice = np.full((n_samples, n_face_configs, self.n_actors), -np.inf)
+        
+        # 初始时刻
+        for f_idx, face_config in enumerate(face_configs):
+            for speaker in range(self.n_actors):
+                # 计算初始概率
+                log_face_prob = self._compute_face_initial_prob(face_config)
+                log_speaker_prob = self._compute_speaker_initial_prob(speaker, face_config)
+                log_emission_prob = self._compute_emission_prob(X_1[0], X_2[0], face_config, speaker)
+                
+                fwd_lattice[0, f_idx, speaker] = log_face_prob + log_speaker_prob + log_emission_prob
+        
+        # 递推
+        for t in range(1, n_samples):
+            for f_idx, face_config in enumerate(face_configs):
+                for speaker in range(self.n_actors):
+                    log_probs = []
+                    
+                    for prev_f_idx, prev_face_config in enumerate(face_configs):
+                        for prev_speaker in range(self.n_actors):
+                            if fwd_lattice[t-1, prev_f_idx, prev_speaker] == -np.inf:
+                                continue
+                                
+                            # 面部转移概率
+                            log_face_trans = self._compute_face_transition_prob(prev_face_config, face_config)
+                            # 说话人转移概率
+                            log_speaker_trans = self._compute_speaker_transition_prob(prev_speaker, speaker, face_config)
+                            # 发射概率
+                            log_emission = self._compute_emission_prob(X_1[t], X_2[t], face_config, speaker)
+                            
+                            log_prob = (fwd_lattice[t-1, prev_f_idx, prev_speaker] + 
+                                      log_face_trans + log_speaker_trans + log_emission)
+                            log_probs.append(log_prob)
+                    
+                    if log_probs:
+                        fwd_lattice[t, f_idx, speaker] = logsumexp(log_probs)
+        
+        return fwd_lattice
+
+    def _do_backward_pass(self, X_1, X_2):
+        """后向算法计算后向概率"""
+        n_samples = len(X_1)
+        face_configs = self._enumerate_face_configs()
+        n_face_configs = len(face_configs)
+        
+        # bwd_lattice[t, f, s] = log P(t+1时刻之后的观测 | t时刻面部配置f, 说话人s)
+        bwd_lattice = np.full((n_samples, n_face_configs, self.n_actors), -np.inf)
+        
+        # 终止时刻
+        bwd_lattice[-1, :, :] = 0.0
+        
+        # 反向递推
+        for t in range(n_samples - 2, -1, -1):
+            for f_idx, face_config in enumerate(face_configs):
+                for speaker in range(self.n_actors):
+                    log_probs = []
+                    
+                    for next_f_idx, next_face_config in enumerate(face_configs):
+                        for next_speaker in range(self.n_actors):
+                            if bwd_lattice[t+1, next_f_idx, next_speaker] == -np.inf:
+                                continue
+                                
+                            # 面部转移概率
+                            log_face_trans = self._compute_face_transition_prob(face_config, next_face_config)
+                            # 说话人转移概率  
+                            log_speaker_trans = self._compute_speaker_transition_prob(speaker, next_speaker, next_face_config)
+                            # 发射概率
+                            log_emission = self._compute_emission_prob(X_1[t+1], X_2[t+1], next_face_config, next_speaker)
+                            
+                            log_prob = (log_face_trans + log_speaker_trans + log_emission + 
+                                      bwd_lattice[t+1, next_f_idx, next_speaker])
+                            log_probs.append(log_prob)
+                    
+                    if log_probs:
+                        bwd_lattice[t, f_idx, speaker] = logsumexp(log_probs)
+        
+        return bwd_lattice
+
+    def _compute_face_initial_prob(self, face_config):
+        """计算面部配置的初始概率"""
+        log_prob = 0.0
+        for actor in range(self.n_actors):
+            if face_config[actor] == 1:
+                log_prob += np.log(self.alpha_[actor])
+            else:
+                log_prob += np.log(1 - self.alpha_[actor])
+        return log_prob
+
+    def _compute_face_transition_prob(self, prev_config, curr_config):
+        """计算面部配置的转移概率"""
+        log_prob = 0.0
+        for actor in range(self.n_actors):
+            prev_state = prev_config[actor]
+            curr_state = curr_config[actor]
+            log_prob += np.log(self.A_F_[actor, prev_state, curr_state])
+        return log_prob
+
+    def _compute_speaker_initial_prob(self, speaker, face_config):
+        """计算说话人的初始概率"""
+        logits = np.array([self.beta_[s] + self.gamma1_ * face_config[s] for s in range(self.n_actors)])
+        log_probs = logits - logsumexp(logits)
+        return log_probs[speaker]
+
+    def _compute_speaker_transition_prob(self, prev_speaker, curr_speaker, face_config):
+        """计算说话人的转移概率"""
+        logits = np.array([self.A_S_[prev_speaker, s] + self.gamma2_ * face_config[s] 
+                          for s in range(self.n_actors)])
+        log_probs = logits - logsumexp(logits)
+        return log_probs[curr_speaker]
+
+    def _compute_emission_prob(self, x1, x2, face_config, speaker):
+        """计算发射概率"""
+        log_prob = 0.0
+        
+        # 说话人观测概率
+        speaker_obs = np.argmax(x1)  # one-hot to index
+        log_prob += np.log(self.B_S_[speaker, speaker_obs])
+        
+        # 面部观测概率
+        for actor in range(self.n_actors):
+            true_face = face_config[actor]
+            obs_face = x2[actor]
+            log_prob += np.log(self.B_F_[actor, true_face, obs_face])
+            
+        return log_prob
+
+    def _initialize_sufficient_statistics(self):
+        """初始化充分统计量"""
+        return {
+            'face_initial_counts': np.zeros(self.n_actors),
+            'face_transition_counts': np.zeros((self.n_actors, 2, 2)),
+            'speaker_initial_counts': np.zeros((self.n_face_states, self.n_actors)),
+            'speaker_transition_counts': np.zeros((self.n_face_states, self.n_actors, self.n_actors)),
+            'face_emission_counts': np.zeros((self.n_actors, 2, 2)),
+            'speaker_emission_counts': np.zeros((self.n_actors, self.n_actors)),
+            'face_initial_face_configs': [],
+            'speaker_transition_face_configs': []
+        }
+
+    def _accumulate_sufficient_statistics(self, stats, X_1, X_2, fwd_lattice, bwd_lattice, seq_loglik):
+        """累积充分统计量"""
+        n_samples = len(X_1)
+        face_configs = self._enumerate_face_configs()
+        
+        # 计算后验概率
+        for t in range(n_samples):
+            # 单时刻后验概率 gamma[t, f, s]
+            gamma = fwd_lattice[t] + bwd_lattice[t] - seq_loglik
+            gamma = np.exp(gamma)
+            
+            # 累积面部初始统计量 (t=0)
+            if t == 0:
+                for f_idx, face_config in enumerate(face_configs):
+                    for speaker in range(self.n_actors):
+                        weight = gamma[f_idx, speaker]
+                        for actor in range(self.n_actors):
+                            if face_config[actor] == 1:
+                                stats['face_initial_counts'][actor] += weight
+                        
+                        # 存储用于说话人初始概率优化的信息
+                        stats['face_initial_face_configs'].append((face_config, speaker, weight))
+            
+            # 累积转移统计量
+            if t > 0:
+                # 计算转移后验概率 xi[t-1, f_prev, s_prev, f_curr, s_curr]
+                for prev_f_idx, prev_face_config in enumerate(face_configs):
+                    for prev_speaker in range(self.n_actors):
+                        for f_idx, face_config in enumerate(face_configs):
+                            for speaker in range(self.n_actors):
+                                
+                                log_xi = (fwd_lattice[t-1, prev_f_idx, prev_speaker] +
+                                         self._compute_face_transition_prob(prev_face_config, face_config) +
+                                         self._compute_speaker_transition_prob(prev_speaker, speaker, face_config) +
+                                         self._compute_emission_prob(X_1[t], X_2[t], face_config, speaker) +
+                                         bwd_lattice[t, f_idx, speaker] - seq_loglik)
+                                
+                                xi = np.exp(log_xi)
+                                
+                                # 面部转移统计量
+                                for actor in range(self.n_actors):
+                                    prev_state = prev_face_config[actor]
+                                    curr_state = face_config[actor]
+                                    stats['face_transition_counts'][actor, prev_state, curr_state] += xi
+                                
+                                # 存储用于说话人转移概率优化的信息
+                                stats['speaker_transition_face_configs'].append(
+                                    (face_config, prev_speaker, speaker, xi))
+            
+            # 累积发射统计量
+            speaker_obs = np.argmax(X_1[t])
+            for f_idx, face_config in enumerate(face_configs):
+                for speaker in range(self.n_actors):
+                    weight = gamma[f_idx, speaker]
+                    
+                    # 说话人发射统计量
+                    stats['speaker_emission_counts'][speaker, speaker_obs] += weight
+                    
+                    # 面部发射统计量
+                    for actor in range(self.n_actors):
+                        true_face = face_config[actor]
+                        obs_face = X_2[t, actor]
+                        stats['face_emission_counts'][actor, true_face, obs_face] += weight
+
+    def _do_mstep(self, stats):
+        """M步：更新参数"""
+        # 更新面部初始概率
+        if 'a' in self.params:
+            total_seqs = len([x for x in stats['face_initial_face_configs']])
+            if total_seqs > 0:
+                self.alpha_ = stats['face_initial_counts'] / total_seqs
+                self.alpha_ = np.clip(self.alpha_, 1e-6, 1-1e-6)  # 避免0概率
+        
+        # 更新面部转移矩阵
+        if 'b' in self.params:
+            for actor in range(self.n_actors):
+                for state in range(2):
+                    total = stats['face_transition_counts'][actor, state].sum()
+                    if total > 0:
+                        self.A_F_[actor, state] = stats['face_transition_counts'][actor, state] / total
+                        self.A_F_[actor, state] = np.clip(self.A_F_[actor, state], 1e-6, 1-1e-6)
+        
+        # 更新说话人初始概率参数 (beta, gamma1)
+        if 'c' in self.params or 'd' in self.params:
+            self._update_speaker_initial_params(stats)
+        
+        # 更新说话人转移概率参数 (A_S, gamma2)  
+        if 'e' in self.params or 'f' in self.params:
+            self._update_speaker_transition_params(stats)
+        
+        # 更新面部发射矩阵
+        if 'f' in self.params:  # 重用f参数位置
+            for actor in range(self.n_actors):
+                for state in range(2):
+                    total = stats['face_emission_counts'][actor, state].sum()
+                    if total > 0:
+                        self.B_F_[actor, state] = stats['face_emission_counts'][actor, state] / total
+                        self.B_F_[actor, state] = np.clip(self.B_F_[actor, state], 1e-6, 1-1e-6)
+        
+        # 更新说话人发射矩阵  
+        if 'g' in self.params:
+            for speaker in range(self.n_actors):
+                total = stats['speaker_emission_counts'][speaker].sum()
+                if total > 0:
+                    self.B_S_[speaker] = stats['speaker_emission_counts'][speaker] / total
+                    self.B_S_[speaker] = np.clip(self.B_S_[speaker], 1e-6, 1-1e-6)
+
+    def _update_speaker_initial_params(self, stats):
+        """使用数值优化更新说话人初始参数"""
+        def objective(params):
+            beta, gamma1 = params[:-1], params[-1]
+            loss = 0.0
+            
+            for face_config, speaker, weight in stats['face_initial_face_configs']:
+                logits = np.array([beta[s] + gamma1 * face_config[s] for s in range(self.n_actors)])
+                log_probs = logits - logsumexp(logits)
+                loss -= weight * log_probs[speaker]
+            
+            return loss
+        
+        # 初始参数
+        x0 = np.concatenate([self.beta_, [self.gamma1_]])
+        
+        # 优化
+        result = minimize(objective, x0, method='L-BFGS-B')
+        
+        if result.success:
+            self.beta_ = result.x[:-1]
+            self.gamma1_ = result.x[-1]
+
+    def _update_speaker_transition_params(self, stats):
+        """使用数值优化更新说话人转移参数"""
+        def objective(params):
+            # 展开A_S矩阵和gamma2
+            A_S_flat = params[:-1].reshape(self.n_actors, self.n_actors)
+            gamma2 = params[-1]
+            
+            loss = 0.0
+            for face_config, prev_speaker, speaker, weight in stats['speaker_transition_face_configs']:
+                logits = np.array([A_S_flat[prev_speaker, s] + gamma2 * face_config[s] 
+                                 for s in range(self.n_actors)])
+                log_probs = logits - logsumexp(logits)
+                loss -= weight * log_probs[speaker]
+            
+            return loss
+        
+        # 初始参数
+        x0 = np.concatenate([self.A_S_.flatten(), [self.gamma2_]])
+        
+        # 优化
+        result = minimize(objective, x0, method='L-BFGS-B')
+        
+        if result.success:
+            self.A_S_ = result.x[:-1].reshape(self.n_actors, self.n_actors)
+            self.gamma2_ = result.x[-1]
+
     def score(self, X_1, X_2, lengths=None):
-        """计算给定观测序列的对数似然"""
+        """计算观测序列的对数似然"""
         X_1 = np.array(X_1)
         X_2 = np.array(X_2)
-        
-        self._check_and_set_n_features(X_1, X_2)
-        lengths = self._validate_lengths(X_1, lengths)
-        
-        return self._compute_log_likelihood(X_1, X_2, lengths)
 
-    def predict(self, X_1, X_2, lengths=None):
-        """预测最可能的隐状态序列"""
-        # 实现Viterbi算法
-        # ... (可选实现)
-        pass
+        return self._do_estep(X_1, X_2, lengths)['log_likelihood']
 
-    @property
-    def converged(self):
-        """检查模型是否收敛"""
-        return self.monitor_.converged
+    def predict(self, X_2, lengths=None):
+        """根据面部观测预测说话人序列"""
+        if lengths is None:
+            lengths = [len(X_2)]
+        
+        face_configs = self._enumerate_face_configs()
+        predictions = []
+        
+        start_idx = 0
+        for length in lengths:
+            end_idx = start_idx + length
+            F_hat_seq = X_2[start_idx:end_idx]
+            
+            # 使用Viterbi算法找到最可能的隐状态序列
+            best_path = self._viterbi(F_hat_seq, face_configs)
+            predictions.extend(best_path)
+            
+            start_idx = end_idx
+        
+        return np.array(predictions)
+
+    def _viterbi(self, F_hat_seq, face_configs):
+        """Viterbi算法解码最可能的说话人序列"""
+        T = len(F_hat_seq)
+        n_face_configs = len(face_configs)
+        
+        # 初始化
+        log_prob = np.full((T, n_face_configs, self.n_actors), -np.inf)
+        path = np.zeros((T, n_face_configs, self.n_actors), dtype=int)
+        
+        # t=0
+        for f_idx, f in enumerate(face_configs):
+            for speaker in range(self.n_actors):
+                log_prob[0, f_idx, speaker] = self._compute_initial_log_prob(f, speaker, F_hat_seq[0])
+        
+        # 递推
+        for t in range(1, T):
+            for f_idx, f in enumerate(face_configs):
+                for speaker in range(self.n_actors):
+                    best_prob = -np.inf
+                    best_prev = 0
+                    
+                    for prev_f_idx, prev_f in enumerate(face_configs):
+                        for prev_speaker in range(self.n_actors):
+                            trans_prob = self._compute_transition_log_prob(
+                                prev_f, f, prev_speaker, speaker, F_hat_seq[t])
+                            
+                            prob = log_prob[t-1, prev_f_idx, prev_speaker] + trans_prob
+                            if prob > best_prob:
+                                best_prob = prob
+                                best_prev = prev_f_idx * self.n_actors + prev_speaker
+                    
+                    log_prob[t, f_idx, speaker] = best_prob
+                    path[t, f_idx, speaker] = best_prev
+        
+        # 回溯
+        best_speakers = np.zeros(T, dtype=int)
+        best_final = np.unravel_index(np.argmax(log_prob[T-1]), log_prob[T-1].shape)
+        
+        current_f_idx, current_speaker = best_final
+        best_speakers[T-1] = current_speaker
+        
+        for t in range(T-2, -1, -1):
+            prev_state = path[t+1, current_f_idx, current_speaker]
+            current_f_idx = prev_state // self.n_actors
+            current_speaker = prev_state % self.n_actors
+            best_speakers[t] = current_speaker
+        
+        return best_speakers
+
+    def _compute_initial_log_prob(self, f, speaker, f_hat):
+        """计算初始状态的对数概率"""
+        log_prob = 0.0
+        
+        # P(F₁)
+        for actor in range(self.n_actors):
+            log_prob += np.log(self.alpha_[actor] if f[actor] else 1 - self.alpha_[actor])
+        
+        # P(S₁|F₁)
+        logits = self.beta_ + self.gamma1_ * np.array(f)
+        log_prob += logits[speaker] - logsumexp(logits)
+        
+        # P(F̂₁|F₁) * P(Ŝ₁|S₁) - 这里简化处理观测
+        for actor in range(self.n_actors):
+            log_prob += np.log(self.B_F_[actor, f[actor], f_hat[actor]])
+        
+        return log_prob
+
+    def _compute_transition_log_prob(self, prev_f, f, prev_speaker, speaker, f_hat):
+        """计算状态转移的对数概率"""
+        log_prob = 0.0
+        
+        # P(Fₜ|Fₜ₋₁)
+        for actor in range(self.n_actors):
+            log_prob += np.log(self.A_F_[actor, prev_f[actor], f[actor]])
+        
+        # P(Sₜ|Sₜ₋₁, Fₜ)
+        logits = self.A_S_[prev_speaker] + self.gamma2_ * np.array(f)
+        log_prob += logits[speaker] - logsumexp(logits)
+        
+        # P(F̂ₜ|Fₜ)
+        for actor in range(self.n_actors):
+            log_prob += np.log(self.B_F_[actor, f[actor], f_hat[actor]])
+        
+        return log_prob
