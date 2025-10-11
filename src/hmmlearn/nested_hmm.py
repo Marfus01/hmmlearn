@@ -456,8 +456,8 @@ class NestedHMM(_AbstractHMM):
         
         # 更新面部转移矩阵
         if 'b' in self.params:
-            for actor in range(self.n_actors):
-                for state in range(2):
+            for actor in range(self.n_actors):  # (11)式中的 $\varrho$
+                for state in range(2):  # (11)式中的 $\delta$
                     total = stats['face_transition_counts'][actor, state].sum()
                     if total > 0:
                         self.A_F_[actor, state] = stats['face_transition_counts'][actor, state] / total
