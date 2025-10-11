@@ -376,7 +376,9 @@ class NestedHMM(_AbstractHMM):
         }
 
     def _accumulate_sufficient_statistics(self, stats, X_1, X_2, fwd_lattice, bwd_lattice, seq_loglik):
-        """累积充分统计量"""
+        """
+        更新累积充分统计量 stats，以便于后续执行参数更新
+        """
         n_samples = len(X_1)
         face_configs = self._enumerate_face_configs()
         
@@ -386,27 +388,28 @@ class NestedHMM(_AbstractHMM):
             gamma = fwd_lattice[t] + bwd_lattice[t] - seq_loglik
             gamma = np.exp(gamma)
             
-            # 累积面部初始统计量 (t=0)
+            # 累积初始统计量
             if t == 0:
-                for f_idx, face_config in enumerate(face_configs):
-                    for speaker in range(self.n_actors):
+                for f_idx, face_config in enumerate(face_configs):  # 人脸期望计算式中的 $f$，说话人期望式中的 $f$
+                    for speaker in range(self.n_actors):  # 人脸期望计算式中的 $\varrho'$，说话人期望式中的 $\varrho$
                         weight = gamma[f_idx, speaker]
                         # NOTE: 计算效率待优化，可以仅对 face_config 中为 1 的位置做 for 循环
-                        for actor in range(self.n_actors):
+                        # 计算人脸初始充分统计量 $\bbE\left[\bbN(F_{\cdot,1,\varrho}=1\vert \btheta^{(s)})\right]$ 中属于第i个片段的部分
+                        for actor in range(self.n_actors):  # 人脸期望式中的 $\varrho$
                             if face_config[actor] == 1:
-                                # 对应 $\bbE\left[\bbN(F_{\cdot,1,\varrho}=1\vert \btheta^{(s)})\right]$ 中，指定 i 时两层求和的过程
                                 stats['face_initial_counts'][actor] += weight
                         
                         # 存储用于说话人初始概率优化的信息
+                        ## 需要同时保存 $f$, $\varrho$的信息和$\frac{1}{\bbP(\cI_i^{obs}\vert\btheta^{(s)})}\Big[\bbU_{i,1}(f,\varrho)\bbV_{i,1}(f,\varrho)\Big]$，因为在后续优化问题的目标函数中都需要用到
                         stats['face_initial_face_configs'].append((face_config, speaker, weight))
             
             # 累积转移统计量
             if t > 0:
                 # 计算转移后验概率 xi[t-1, f_prev, s_prev, f_curr, s_curr]
-                for prev_f_idx, prev_face_config in enumerate(face_configs):
-                    for prev_speaker in range(self.n_actors):
-                        for f_idx, face_config in enumerate(face_configs):
-                            for speaker in range(self.n_actors):
+                for prev_f_idx, prev_face_config in enumerate(face_configs):  # 人脸期望计算式中的 $f$，说话人期望计算式中的 $f'$
+                    for prev_speaker in range(self.n_actors):  # 人脸期望计算式中的 $\varrho'$，说话人期望式中的 $\varrho$
+                        for f_idx, face_config in enumerate(face_configs):  # 人脸期望计算式中的 $f'$，说话人期望计算式中的 $f$
+                            for speaker in range(self.n_actors):  # 人脸期望计算式中的 $\varrho^\ast$，，说话人期望式中的 $\varrho'$
                                 
                                 log_xi = (fwd_lattice[t-1, prev_f_idx, prev_speaker] +
                                          self._compute_face_transition_prob(prev_face_config, face_config) +
@@ -414,38 +417,39 @@ class NestedHMM(_AbstractHMM):
                                          self._compute_emission_prob(X_1[t], X_2[t], face_config, speaker) +
                                          bwd_lattice[t, f_idx, speaker] - seq_loglik)
                                 
-                                xi = np.exp(log_xi)
+                                xi = np.exp(log_xi) # 求和式中的每一项
                                 
-                                # 面部转移统计量
-                                for actor in range(self.n_actors):
-                                    prev_state = prev_face_config[actor]
-                                    curr_state = face_config[actor]
+                                # 计算面部转移统计量 $\bbE\left[\bbN(F_{\cdot,\cdot-1,\varrho}=\delta,F_{\cdot,\cdot,\varrho}=\delta' \vert \btheta^{(s)})\right]$
+                                for actor in range(self.n_actors):  #  人脸期望式中的 $\varrho$
+                                    prev_state = prev_face_config[actor]  # 人脸期望式中的 $\delta$
+                                    curr_state = face_config[actor] # 人脸期望式中的 $\delta'$
                                     stats['face_transition_counts'][actor, prev_state, curr_state] += xi
                                 
                                 # 存储用于说话人转移概率优化的信息
-                                stats['speaker_transition_face_configs'].append(
+                                # 与说话人初始概率类似，需要同时保存 (f, \varrho, \varrho')的信息和计算式中三层求和式内项的取值
+                                stats['speaker_transition_face_configs'].append(  # 不同的prev_face_config会产生不同的xi，但(f, \varrho, \varrho')相同
                                     (face_config, prev_speaker, speaker, xi))
             
             # 累积发射统计量
-            speaker_obs = np.argmax(X_1[t])
-            for f_idx, face_config in enumerate(face_configs):
+            speaker_obs = np.argmax(X_1[t]) # 说话人期望计算式中的 $\varrho'$
+            for f_idx, face_config in enumerate(face_configs):  # 期望计算式中的 $f$
                 for speaker in range(self.n_actors):
-                    weight = gamma[f_idx, speaker]
-                    
+                    weight = gamma[f_idx, speaker]  # 人脸期望计算式中的 $\varrho$，说话人期望计算式中的 $\varrho'$
+
+                    # 面部发射统计量
+                    for actor in range(self.n_actors):  # 人脸期望式中的 $\varrho$
+                        true_face = face_config[actor]  # 人脸期望式中的 $\delta$
+                        obs_face = X_2[t, actor]  # 人脸期望式中的 $\delta'$
+                        stats['face_emission_counts'][actor, true_face, obs_face] += weight
+
                     # 说话人发射统计量
                     stats['speaker_emission_counts'][speaker, speaker_obs] += weight
-                    
-                    # 面部发射统计量
-                    for actor in range(self.n_actors):
-                        true_face = face_config[actor]
-                        obs_face = X_2[t, actor]
-                        stats['face_emission_counts'][actor, true_face, obs_face] += weight
 
     def _do_mstep(self, stats):
         """M步：更新参数"""
         # 更新面部初始概率
         if 'a' in self.params:
-            total_seqs = len([x for x in stats['face_initial_face_configs']])
+            total_seqs = len([x for x in stats['face_initial_face_configs']]) # 长度为 m * n_actors * 2^n_actors
             if total_seqs > 0:
                 self.alpha_ = stats['face_initial_counts'] / total_seqs
                 self.alpha_ = np.clip(self.alpha_, 1e-6, 1-1e-6)  # 避免0概率
