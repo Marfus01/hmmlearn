@@ -182,18 +182,41 @@ print(f"lengths: {lengths}")
 # 创建和训练模型
 from hmmlearn.nested_hmm import NestedHMM
 print("\n=== 训练模型 ===")
-model = NestedHMM(n_actors=3, n_iter=20, verbose=True, tol=1e-3)
+model = NestedHMM(n_actors=3, n_iter=30, verbose=True, tol=1e-3)
 model.fit(X_1, X_2, lengths)
 
-# 计算似然
-log_likelihood = model.score(X_1, X_2, lengths)
-print(f"\nFinal log likelihood: {log_likelihood}")
+# 对比模型参数的真实值和拟合值
+print("\n=== 学习到的参数对比 ===")
+print("α (面部出现初始概率):")
+print("真实:", np.round(params['alpha'], 3))
+print("学习:", np.round(model.alpha_, 3))
 
-# 输出学习到的参数
-print("\n=== 学习到的参数 ===")
-print(f"真实 α: {params['alpha']}")
-print(f"学习 α: {model.alpha_}")
-print(f"真实 γ1: {params['gamma1']}")
-print(f"学习 γ1: {model.gamma1_}")
-print(f"真实 γ2: {params['gamma2']}")
-print(f"学习 γ2: {model.gamma2_}")
+print("\nβ (说话人初始偏好):")
+print("真实:", np.round(params['beta'], 3))
+print("学习:", np.round(model.beta_, 3))
+
+print("\nγ1 (面部对说话人初始影响):")
+print("真实:", np.round(params['gamma1'], 3))
+print("学习:", np.round(model.gamma1_, 3))
+
+print("\nγ2 (面部对说话人转移影响):")
+print("真实:", np.round(params['gamma2'], 3))
+print("学习:", np.round(model.gamma2_, 3))
+
+print("\nA_F (面部转移矩阵):")
+for i in range(n_actors):
+    print(f"演员{i} 真实:", np.round(params['A_F'][i], 3))
+    print(f"演员{i} 学习:", np.round(model.A_F_[i], 3))
+
+print("\nA_S (说话人转移矩阵):")
+print("真实:", np.round(params['A_S'], 3))
+print("学习:", np.round(model.A_S_, 3))
+
+print("\nB_F (面部识别混淆矩阵):")
+for i in range(n_actors):
+    print(f"演员{i} 真实:", np.round(params['B_F'][i], 3))
+    print(f"演员{i} 学习:", np.round(model.B_F_[i], 3))
+
+print("\nB_S (说话人识别混淆矩阵):")
+print("真实:", np.round(params['B_S'], 3))
+print("学习:", np.round(model.B_S_, 3))

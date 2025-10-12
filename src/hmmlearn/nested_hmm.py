@@ -27,16 +27,16 @@ class NestedHMM(_AbstractHMM):
         收敛阈值
     verbose : bool, optional (default: False)
         是否打印详细信息
-    params : str, optional (default: "abcdefg")
+    params : str, optional (default: "abcdefgh")
         控制哪些参数被更新
-    init_params : str, optional (default: "abcdefg")
+    init_params : str, optional (default: "abcdefgh")
         控制哪些参数被初始化
     random_state : int or RandomState, optional
         随机种子
     """
     
     def __init__(self, n_actors, n_iter=100, tol=1e-2, verbose=False,
-                 params="abcdefg", init_params="abcdefg", random_state=None):
+                 params="abcdefgh", init_params="abcdefgh", random_state=None):
         self.n_actors = n_actors    # 演员数量
         self.n_face_states = 2 ** n_actors  # 面部状态数量 (每个演员有2个状态)
         self.n_iter = n_iter    # 最大迭代次数
@@ -76,8 +76,7 @@ class NestedHMM(_AbstractHMM):
         if lengths is None:
             return [len(X)]
         
-        lengths = np.asarray(lengths)
-        if lengths.sum() != len(X):
+        if np.asarray(lengths).sum() != len(X):
             raise ValueError("Sum of lengths must equal number of samples")
         
         return lengths
@@ -133,6 +132,7 @@ class NestedHMM(_AbstractHMM):
                 for s in range(2):
                     self.B_F_[actor, s] = random_state.dirichlet([2, 1] if s == 0 else [1, 2])
 
+        if 'h' in self.init_params:
             # B_S: 说话人识别混淆矩阵 (n_actors, n_actors), 每行和为1
             self.B_S_ = np.zeros((self.n_actors, self.n_actors))
             for actor in range(self.n_actors):
@@ -158,8 +158,6 @@ class NestedHMM(_AbstractHMM):
 
             # 检查收敛
             curr_loglik = stats['log_likelihood'] # 计算当前对数似然
-            self.monitor_.history.append(curr_loglik)
-            self.monitor_.iter = n_iter
             self.monitor_.report(curr_loglik)
             if self.monitor_.converged:
                 break
@@ -462,6 +460,10 @@ class NestedHMM(_AbstractHMM):
                     if total > 0:
                         self.A_F_[actor, state] = stats['face_transition_counts'][actor, state] / total
                         self.A_F_[actor, state] = np.clip(self.A_F_[actor, state], 1e-6, 1-1e-6)
+                    else:
+                        self.A_F_[actor, state] = np.full(2, 1 / 2)
+                        self.A_F_[actor, state, -1] = 1 - self.A_F_[actor, state, :-1].sum()
+                        print(f"Warning: Transition probabilities for actor {actor}, state {state} were not updated due to insufficient data. Reset to uniform distribution.")
         
         # 更新说话人初始概率参数 (beta, gamma1)
         if 'c' in self.params or 'd' in self.params:
@@ -472,21 +474,29 @@ class NestedHMM(_AbstractHMM):
             self._update_speaker_transition_params(stats)
         
         # 更新面部发射矩阵
-        if 'f' in self.params:  # 重用f参数位置
-            for actor in range(self.n_actors):
-                for state in range(2):
+        if 'g' in self.params:
+            for actor in range(self.n_actors):  # (14)式中的 $\varrho$
+                for state in range(2):  # (14)式中的 $\delta$
                     total = stats['face_emission_counts'][actor, state].sum()
                     if total > 0:
-                        self.B_F_[actor, state] = stats['face_emission_counts'][actor, state] / total
+                        self.B_F_[actor, state] = stats['face_emission_counts'][actor, state] / total # row normalization
                         self.B_F_[actor, state] = np.clip(self.B_F_[actor, state], 1e-6, 1-1e-6)
+                    else:
+                        self.B_F_[actor, state] = np.full(2, 1 / 2)
+                        self.B_F_[actor, state, -1] = 1 - self.B_F_[actor, state, :-1].sum()
+                        print(f"Warning: Emission probabilities for actor {actor}, state {state} were not updated due to insufficient data. Reset to uniform distribution.")
         
         # 更新说话人发射矩阵  
-        if 'g' in self.params:
-            for speaker in range(self.n_actors):
+        if 'h' in self.params:
+            for speaker in range(self.n_actors):  # (15)式中的 $\varrho$
                 total = stats['speaker_emission_counts'][speaker].sum()
                 if total > 0:
-                    self.B_S_[speaker] = stats['speaker_emission_counts'][speaker] / total
+                    self.B_S_[speaker] = stats['speaker_emission_counts'][speaker] / total  # row normalization
                     self.B_S_[speaker] = np.clip(self.B_S_[speaker], 1e-6, 1-1e-6)
+                else:
+                    self.B_S_[speaker] = np.full(self.n_actors, 1 / self.n_actors)
+                    self.B_S_[speaker, -1] = 1 - self.B_S_[speaker, :-1].sum()
+                    print(f"Warning: Emission probabilities for speaker {speaker} were not updated due to insufficient data. Reset to uniform distribution.")
 
     def _update_speaker_initial_params(self, stats):
         """使用数值优化更新说话人初始参数"""
@@ -506,14 +516,17 @@ class NestedHMM(_AbstractHMM):
             return loss
         
         # 初始参数
-        x0 = np.concatenate([self.beta_, [self.gamma1_]])
-        
+        x0 = np.concatenate([self.beta_, self.gamma1_])
+
+            
         # 优化
         result = minimize(objective, x0, method='L-BFGS-B')
         
         if result.success:
             self.beta_ = result.x[:-1]
-            self.gamma1_ = result.x[-1]
+            self.gamma1_ = np.array([result.x[-1]])
+        else:
+            print("Warning: Speaker initial parameters optimization did not converge.")
 
     def _update_speaker_transition_params(self, stats):
         """使用数值优化更新说话人转移参数"""
@@ -538,14 +551,16 @@ class NestedHMM(_AbstractHMM):
             return loss
         
         # 初始参数
-        x0 = np.concatenate([self.A_S_.flatten(), [self.gamma2_]])
+        x0 = np.concatenate([self.A_S_.flatten(), self.gamma2_])
         
         # 优化
         result = minimize(objective, x0, method='L-BFGS-B')
         
         if result.success:
             self.A_S_ = result.x[:-1].reshape(self.n_actors, self.n_actors)
-            self.gamma2_ = result.x[-1]
+            self.gamma2_ = np.array([result.x[-1]])
+        else:
+            print("Warning: Speaker transition parameters optimization did not converge.")
 
     def score(self, X_1, X_2, lengths=None):
         """计算观测序列的对数似然"""
