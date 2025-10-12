@@ -574,7 +574,6 @@ class NestedHMM(_AbstractHMM):
         if lengths is None:
             lengths = [len(X_2)]
         
-        face_configs = self._enumerate_face_configs()
         predictions = []
         
         start_idx = 0
@@ -583,16 +582,17 @@ class NestedHMM(_AbstractHMM):
             F_hat_seq = X_2[start_idx:end_idx]
             
             # 使用Viterbi算法找到最可能的隐状态序列
-            best_path = self._viterbi(F_hat_seq, face_configs)
+            best_path = self._viterbi(F_hat_seq)
             predictions.extend(best_path)
             
             start_idx = end_idx
         
         return np.array(predictions)
 
-    def _viterbi(self, F_hat_seq, face_configs):
+    def _viterbi(self, F_hat_seq):
         """Viterbi算法解码最可能的说话人序列"""
         T = len(F_hat_seq)
+        face_configs = self._enumerate_face_configs()
         n_face_configs = len(face_configs)
         
         # 初始化
