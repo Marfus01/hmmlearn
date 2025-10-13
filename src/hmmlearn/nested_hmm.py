@@ -94,6 +94,7 @@ class NestedHMM(_AbstractHMM):
         return face_configs
 
     def _init_params(self):
+        self.log_likelihood_ = -np.inf
         """初始化嵌套HMM的参数"""
         random_state = check_random_state(self.random_state)
         
@@ -196,6 +197,7 @@ class NestedHMM(_AbstractHMM):
             start_idx = end_idx
             
         stats['log_likelihood'] = log_likelihood
+        self.log_likelihood_ = log_likelihood
         return stats
 
     def _do_forward_pass(self, X_1, X_2):
@@ -567,110 +569,378 @@ class NestedHMM(_AbstractHMM):
         X_1 = np.array(X_1)
         X_2 = np.array(X_2)
 
+        # if self.log_likelihood_ == -np.inf:
+        #     raise ValueError("Model must be fitted before scoring.")
+        # else:
+        #     return self.log_likelihood_            
         return self._do_estep(X_1, X_2, lengths)['log_likelihood']
 
-    def predict(self, X_2, lengths=None):
-        """根据面部观测预测说话人序列"""
-        if lengths is None:
-            lengths = [len(X_2)]
+
+    def predict_proba(self, X_1, X_2, lengths=None):
+        """
+        计算给定观测序列时隐藏状态的后验概率
         
-        predictions = []
+        Parameters
+        ----------
+        X_1 : array-like, shape (n_samples, n_actors)
+            说话人观测，one-hot编码
+        X_2 : array-like, shape (n_samples, n_actors)  
+            面部出现观测，二进制数据
+        lengths : array-like of integers, optional
+            每个序列的长度
+            
+        Returns
+        -------
+        posteriors : dict
+            包含各种后验概率的字典:
+            - 'face_states': array, shape (n_samples, n_actors)
+              每个时刻每个演员面部出现的后验概率
+            - 'speaker_states': array, shape (n_samples, n_actors)
+              每个时刻每个演员是说话人的后验概率
+            - 'joint_states': array, shape (n_samples, n_face_states, n_actors)
+              每个时刻联合状态 (face_config, speaker) 的后验概率
+        """
+        X_1 = np.array(X_1)
+        X_2 = np.array(X_2)
+        
+        self._check_and_set_n_features(X_1, X_2)
+        lengths = self._validate_lengths(X_1, lengths)
+        
+        n_samples = len(X_1)
+        face_configs = self._enumerate_face_configs()
+        
+        # 初始化输出
+        face_posteriors = np.zeros((n_samples, self.n_actors))
+        speaker_posteriors = np.zeros((n_samples, self.n_actors))
+        joint_posteriors = np.zeros((n_samples, self.n_face_states, self.n_actors))
         
         start_idx = 0
         for length in lengths:
             end_idx = start_idx + length
-            F_hat_seq = X_2[start_idx:end_idx]
             
-            # 使用Viterbi算法找到最可能的隐状态序列
-            best_path = self._viterbi(F_hat_seq)
-            predictions.extend(best_path)
+            # 获取当前序列段
+            seq_X1 = X_1[start_idx:end_idx]
+            seq_X2 = X_2[start_idx:end_idx]
+            
+            # 计算前向和后向概率
+            fwd_lattice = self._do_forward_pass(seq_X1, seq_X2)
+            bwd_lattice = self._do_backward_pass(seq_X1, seq_X2)
+            
+            # 计算序列的对数似然
+            seq_loglik = logsumexp(fwd_lattice[-1])
+            
+            # 计算每个时刻的后验概率
+            for t in range(length):
+                # 联合后验概率 P(F_t=f, S_t=s | 全部观测)
+                log_gamma = fwd_lattice[t] + bwd_lattice[t] - seq_loglik
+                gamma = np.exp(log_gamma)
+                
+                # 存储联合后验概率
+                joint_posteriors[start_idx + t] = gamma
+                
+                # 计算面部状态的边际后验概率
+                for actor in range(self.n_actors):
+                    face_prob = 0.0
+                    for f_idx, face_config in enumerate(face_configs):
+                        if face_config[actor] == 1:  # 该演员面部出现
+                            face_prob += gamma[f_idx].sum()  # 对所有说话人求和
+                    face_posteriors[start_idx + t, actor] = face_prob
+                
+                # 计算说话人状态的边际后验概率  
+                for speaker in range(self.n_actors):
+                    speaker_prob = gamma[:, speaker].sum()  # 对所有面部配置求和
+                    speaker_posteriors[start_idx + t, speaker] = speaker_prob
             
             start_idx = end_idx
         
-        return np.array(predictions)
+        return {
+            'face_states': face_posteriors,
+            'speaker_states': speaker_posteriors, 
+            'joint_states': joint_posteriors
+        }
 
-    def _viterbi(self, F_hat_seq):
-        """Viterbi算法解码最可能的说话人序列"""
-        T = len(F_hat_seq)
+    def predict(self, X_1, X_2, lengths=None, algorithm="viterbi"):
+        """
+        预测最可能的隐藏状态序列
+        
+        Parameters
+        ----------
+        X_1 : array-like, shape (n_samples, n_actors)
+            说话人观测，one-hot编码
+        X_2 : array-like, shape (n_samples, n_actors)
+            面部出现观测，二进制数据
+        lengths : array-like of integers, optional
+            每个序列的长度
+        algorithm : str, optional (default: "viterbi")
+            解码算法，目前支持 viterbi 和 "map"
+            
+        Returns
+        -------
+        predictions : tuple
+            - face_states : array, shape (n_samples, n_actors)
+              预测的面部状态 (0或1)
+            - speaker_states : array, shape (n_samples,)
+              预测的说话人状态 (0到n_actors-1)
+        """
+        if algorithm == "map":
+            # MAP解码：使用后验概率的最大值
+            posteriors = self.predict_proba(X_1, X_2, lengths)
+            
+            # 面部状态：每个演员独立预测
+            face_states = (posteriors['face_states'] > 0.5).astype(int)
+            
+            # 说话人状态：选择概率最大的演员
+            speaker_states = np.argmax(posteriors['speaker_states'], axis=1)
+            
+            return face_states, speaker_states
+            
+        elif algorithm == "viterbi":
+            # Viterbi解码：找到最可能的完整状态序列
+            return self._viterbi_decode(X_1, X_2, lengths)
+        else:
+            raise ValueError(f"Unknown algorithm: {algorithm}")
+
+    def _viterbi_decode(self, X_1, X_2, lengths=None):
+        """
+        预测隐藏状态序列 (面部状态和说话人状态)
+        
+        Parameters
+        ----------
+        X_1 : array-like, shape (n_samples, n_actors)
+            说话人观测，one-hot编码
+        X_2 : array-like, shape (n_samples, n_actors)
+            面部出现，二进制数据
+        lengths : array-like of integers, optional
+            序列长度，如果为None，则假设是单一序列
+            
+        Returns
+        -------
+        face_states : array, shape (n_samples, n_actors)
+            预测的面部状态序列
+        speaker_states : array, shape (n_samples,)
+            预测的说话人状态序列
+        """
+        X_1 = np.asarray(X_1)
+        X_2 = np.asarray(X_2)
+        self._check_and_set_n_features(X_1, X_2)
+        lengths = self._validate_lengths(X_1, lengths)
+        
+        # 初始化输出数组
+        face_states = np.zeros_like(X_2, dtype=int)
+        speaker_states = np.zeros(X_1.shape[0], dtype=int)
+        
+        start_idx = 0
+        for seq_len in lengths:
+            end_idx = start_idx + seq_len
+            
+            # 提取当前序列
+            seq_X1 = X_1[start_idx:end_idx]
+            seq_X2 = X_2[start_idx:end_idx]
+            
+            # 使用维特比算法预测
+            seq_face_states, seq_speaker_states = self._viterbi(seq_X1, seq_X2)
+            
+            # 存储结果
+            face_states[start_idx:end_idx] = seq_face_states
+            speaker_states[start_idx:end_idx] = seq_speaker_states
+            
+            start_idx = end_idx
+            
+        return face_states, speaker_states
+        
+    def _viterbi(self, X_1, X_2):
+        """
+        对单个序列使用维特比算法进行解码
+        
+        Parameters
+        ----------
+        X_1 : array-like, shape (n_frames, n_actors)
+            说话人观测序列
+        X_2 : array-like, shape (n_frames, n_actors)
+            面部出现序列
+            
+        Returns
+        -------
+        face_states : array, shape (n_frames, n_actors)
+            预测的面部状态序列
+        speaker_states : array, shape (n_frames,)
+            预测的说话人状态序列
+        """
+        n_frames = X_1.shape[0]
         face_configs = self._enumerate_face_configs()
-        n_face_configs = len(face_configs)
         
-        # 初始化
-        log_prob = np.full((T, n_face_configs, self.n_actors), -np.inf)
-        path = np.zeros((T, n_face_configs, self.n_actors), dtype=int)
+        # 初始化维特比表格
+        # viterbi[t][f][s] = 在时刻t，面部配置f，说话人s的最大概率的对数
+        viterbi = np.full((n_frames, self.n_face_states, self.n_actors), 
+                         -np.inf)
+        # 回溯路径
+        path_face = np.zeros((n_frames, self.n_face_states, self.n_actors), dtype=int)
+        path_speaker = np.zeros((n_frames, self.n_face_states, self.n_actors), dtype=int)
         
-        # t=0
-        for f_idx, f in enumerate(face_configs):
+        # 初始化 t=0
+        for f_idx, face_config in enumerate(face_configs):
             for speaker in range(self.n_actors):
-                log_prob[0, f_idx, speaker] = self._compute_initial_log_prob(f, speaker, F_hat_seq[0])
+                viterbi[0, f_idx, speaker] = self._compute_initial_log_prob(
+                    face_config, speaker, X_1[0], X_2[0]
+                )
         
-        # 递推
-        for t in range(1, T):
-            for f_idx, f in enumerate(face_configs):
+        # 前向传播 t=1到n_frames-1
+        for t in range(1, n_frames):
+            for f_idx, face_config in enumerate(face_configs):
                 for speaker in range(self.n_actors):
-                    best_prob = -np.inf
-                    best_prev = 0
+                    max_prob = -np.inf
+                    best_prev_f = 0
+                    best_prev_s = 0
                     
-                    for prev_f_idx, prev_f in enumerate(face_configs):
+                    # 遍历所有可能的前一状态
+                    for prev_f_idx, prev_face_config in enumerate(face_configs):
                         for prev_speaker in range(self.n_actors):
-                            trans_prob = self._compute_transition_log_prob(
-                                prev_f, f, prev_speaker, speaker, F_hat_seq[t])
+                            if viterbi[t-1, prev_f_idx, prev_speaker] == -np.inf:
+                                continue
                             
-                            prob = log_prob[t-1, prev_f_idx, prev_speaker] + trans_prob
-                            if prob > best_prob:
-                                best_prob = prob
-                                best_prev = prev_f_idx * self.n_actors + prev_speaker
+                            # 计算转移概率
+                            trans_log_prob = self._compute_transition_log_prob(
+                                prev_face_config, prev_speaker,
+                                face_config, speaker,
+                                X_1[t], X_2[t]
+                            )
+                            
+                            # 总概率
+                            total_prob = viterbi[t-1, prev_f_idx, prev_speaker] + trans_log_prob
+                            
+                            if total_prob > max_prob:
+                                max_prob = total_prob
+                                best_prev_f = prev_f_idx
+                                best_prev_s = prev_speaker
                     
-                    log_prob[t, f_idx, speaker] = best_prob
-                    path[t, f_idx, speaker] = best_prev
+                    viterbi[t, f_idx, speaker] = max_prob
+                    path_face[t, f_idx, speaker] = best_prev_f
+                    path_speaker[t, f_idx, speaker] = best_prev_s
         
-        # 回溯
-        best_speakers = np.zeros(T, dtype=int)
-        best_final = np.unravel_index(np.argmax(log_prob[T-1]), log_prob[T-1].shape)
+        # 找到最优路径的结束状态
+        max_prob = -np.inf
+        best_end_f = 0
+        best_end_s = 0
+        for f_idx in range(self.n_face_states):
+            for speaker in range(self.n_actors):
+                if viterbi[n_frames-1, f_idx, speaker] > max_prob:
+                    max_prob = viterbi[n_frames-1, f_idx, speaker]
+                    best_end_f = f_idx
+                    best_end_s = speaker
         
-        current_f_idx, current_speaker = best_final
-        best_speakers[T-1] = current_speaker
+        # 回溯最优路径
+        face_states = np.zeros((n_frames, self.n_actors), dtype=int)
+        speaker_states = np.zeros(n_frames, dtype=int)
         
-        for t in range(T-2, -1, -1):
-            prev_state = path[t+1, current_f_idx, current_speaker]
-            current_f_idx = prev_state // self.n_actors
-            current_speaker = prev_state % self.n_actors
-            best_speakers[t] = current_speaker
+        curr_f = best_end_f
+        curr_s = best_end_s
         
-        return best_speakers
+        for t in range(n_frames-1, -1, -1):
+            # 记录当前状态
+            face_config = face_configs[curr_f]
+            for actor in range(self.n_actors):
+                face_states[t, actor] = face_config[actor]
+            speaker_states[t] = curr_s
+            
+            # 回溯到前一状态
+            if t > 0:
+                prev_f = path_face[t, curr_f, curr_s]
+                prev_s = path_speaker[t, curr_f, curr_s]
+                curr_f = prev_f
+                curr_s = prev_s
+        
+        return face_states, speaker_states
 
-    def _compute_initial_log_prob(self, f, speaker, f_hat):
-        """计算初始状态的对数概率"""
-        log_prob = 0.0
+    def _compute_initial_log_prob(self, face_config, speaker, X_1_t, X_2_t):
+        """
+        计算初始状态的对数概率
         
-        # P(F₁)
+        Parameters
+        ----------
+        face_config : array-like, shape (n_actors,)
+            面部配置状态
+        speaker : int
+            说话人状态
+        X_1_t : array-like, shape (n_actors,)
+            时刻t的说话人观测
+        X_2_t : array-like, shape (n_actors,)
+            时刻t的面部观测
+            
+        Returns
+        -------
+        log_prob : float
+            初始状态的对数概率
+        """
+        # 计算初始面部状态概率
+        face_prob = 0.0
         for actor in range(self.n_actors):
-            log_prob += np.log(self.alpha_[actor] if f[actor] else 1 - self.alpha_[actor])
+            if face_config[actor] == 1:
+                face_prob += np.log(self.alpha_[actor])
+            else:
+                face_prob += np.log(1 - self.alpha_[actor])
         
-        # P(S₁|F₁)
-        logits = self.beta_ + self.gamma1_ * np.array(f)
-        log_prob += logits[speaker] - logsumexp(logits)
+        # 计算初始说话人概率 P(S_1 | F_1)
+        speaker_logits = self.beta_ + self.gamma1_ * face_config[speaker]
+        speaker_probs = softmax(speaker_logits)
+        speaker_prob = np.log(speaker_probs[speaker])
         
-        # P(F̂₁|F₁) * P(Ŝ₁|S₁) - 这里简化处理观测
+        # 计算观测概率 - 面部 P(F_hat | F)
+        face_obs_prob = 0.0
         for actor in range(self.n_actors):
-            log_prob += np.log(self.B_F_[actor, f[actor], f_hat[actor]])
+            face_obs_prob += np.log(self.B_F_[actor, face_config[actor], X_2_t[actor]])
         
-        return log_prob
-
-    def _compute_transition_log_prob(self, prev_f, f, prev_speaker, speaker, f_hat):
-        """计算状态转移的对数概率"""
-        log_prob = 0.0
+        # 计算观测概率 - 说话人 P(S_hat | S)
+        speaker_obs_prob = np.log(self.B_S_[speaker, np.argmax(X_1_t)])
         
-        # P(Fₜ|Fₜ₋₁)
+        return face_prob + speaker_prob + face_obs_prob + speaker_obs_prob
+    
+    def _compute_transition_log_prob(self, prev_face_config, prev_speaker, 
+                                   curr_face_config, curr_speaker, X_1_t, X_2_t):
+        """
+        计算状态转移的对数概率
+        
+        Parameters
+        ----------
+        prev_face_config : array-like, shape (n_actors,)
+            前一时刻的面部配置状态
+        prev_speaker : int
+            前一时刻的说话人状态
+        curr_face_config : array-like, shape (n_actors,)
+            当前时刻的面部配置状态
+        curr_speaker : int
+            当前时刻的说话人状态
+        X_1_t : array-like, shape (n_actors,)
+            当前时刻的说话人观测
+        X_2_t : array-like, shape (n_actors,)
+            当前时刻的面部观测
+            
+        Returns
+        -------
+        log_prob : float
+            状态转移的对数概率
+        """
+        # 计算面部状态转移概率 P(F_t | F_{t-1})
+        face_trans_prob = 0.0
         for actor in range(self.n_actors):
-            log_prob += np.log(self.A_F_[actor, prev_f[actor], f[actor]])
+            prev_state = prev_face_config[actor]
+            curr_state = curr_face_config[actor]
+            face_trans_prob += np.log(self.A_F_[actor, prev_state, curr_state])
         
-        # P(Sₜ|Sₜ₋₁, Fₜ)
-        logits = self.A_S_[prev_speaker] + self.gamma2_ * np.array(f)
-        log_prob += logits[speaker] - logsumexp(logits)
+        # 计算说话人状态转移概率 P(S_t | S_{t-1}, F_t)
+        # 使用softmax确保概率归一化
+        all_logits = np.zeros(self.n_actors)
+        for s in range(self.n_actors):
+            all_logits[s] = self.A_S_[prev_speaker, s] + self.gamma2_ * curr_face_config[s]
         
-        # P(F̂ₜ|Fₜ)
+        speaker_trans_probs = softmax(all_logits)
+        speaker_trans_prob = np.log(speaker_trans_probs[curr_speaker])
+        
+        # 计算观测概率 - 面部 P(F_hat_t | F_t)
+        face_obs_prob = 0.0
         for actor in range(self.n_actors):
-            log_prob += np.log(self.B_F_[actor, f[actor], f_hat[actor]])
+            face_obs_prob += np.log(self.B_F_[actor, curr_face_config[actor], X_2_t[actor]])
         
-        return log_prob
+        # 计算观测概率 - 说话人 P(S_hat_t | S_t)
+        speaker_obs_prob = np.log(self.B_S_[curr_speaker, np.argmax(X_1_t)])
+        
+        return face_trans_prob + speaker_trans_prob + face_obs_prob + speaker_obs_prob
