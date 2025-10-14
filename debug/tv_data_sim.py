@@ -192,9 +192,17 @@ print(f"lengths: {lengths}")
 
 # 创建和训练模型
 from hmmlearn.nested_hmm import NestedHMM
+import time
 print("\n=== 训练模型 ===")
+start_time = time.time()
+print("训练开始时间:", time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(start_time)))
+
 model = NestedHMM(n_actors=3, n_iter=100, verbose=True, tol=1e-3)
 model.fit(X_1, X_2, lengths)
+
+end_time = time.time()
+print("训练结束时间:", time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(end_time)))
+print("训练耗时:", end_time - start_time, "秒")
 
 # 对比模型参数的真实值和拟合值
 print("\n=== 学习到的参数对比 ===")
