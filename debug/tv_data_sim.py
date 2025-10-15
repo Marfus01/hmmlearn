@@ -197,7 +197,7 @@ print("\n=== 训练模型 ===")
 start_time = time.time()
 print("训练开始时间:", time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(start_time)))
 
-model = NestedHMM(n_actors=3, n_iter=100, verbose=True, tol=1e-3)
+model = NestedHMM(n_actors=3, n_iter=1, verbose=True, tol=1e-3)
 model.fit(X_1, X_2, lengths)
 
 end_time = time.time()
@@ -250,7 +250,10 @@ print(pred_probs['joint_states'].shape)
 
 # MAP 解码结果
 print("\n=== MAP 解码结果 ===")
+start_time = time.time()
 face_states, speaker_states = model.predict(X_1, X_2, lengths)
+end_time = time.time()
+print("MAP 解码耗时:", end_time - start_time, "秒")
 
 # 面部状态对比 (MAP)
 print("\n--- 面部状态对比 (MAP) ---")
@@ -282,7 +285,10 @@ print("MAP: ", comparison_speaker[2, :])
 
 # viterbi 解码结果
 print("\n=== Viterbi 解码结果 ===")
+start_time = time.time()
 face_states_viterbi, speaker_states_viterbi = model.predict(X_1, X_2, lengths, algorithm="viterbi")
+end_time = time.time()
+print("viterbi解码耗时:", end_time - start_time, "秒")
 
 # 面部状态对比 (Viterbi)
 print("\n--- 面部状态对比 (Viterbi) ---")

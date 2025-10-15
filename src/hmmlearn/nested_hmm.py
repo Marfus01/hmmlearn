@@ -5,12 +5,26 @@ from sklearn.utils import check_random_state
 
 from .base import _AbstractHMM, ConvergenceMonitor
 from .utils import normalize, log_normalize
+import time
 
-# NOTE
-## 1. 目前EM算法完全在 python 中实现，涉及多层循环，效率较低，后续可以考虑用 Cython 优化
-## 2. 存储 U, V 矩阵的尺寸较大，有可能导致内存不足
-## 3. 目前没有用到 hmmc.cpp中的logaddexp，可能会有数值稳定性问题
-## 4. 目前的predict方法效果未经验证
+# NOTE 待办事项（整体优化还是比较麻烦的，先测简化版评分，回头再弄）
+## 功能相关
+### 1. 目前EM算法的 python 实现涉及多层循环，效率较低，但是正确性已经过保证
+### 2. 目前的predict方法正确性未经验证
+### 3. 目前没有用到 hmmc.cpp中的logaddexp，可能会有数值稳定性问题，也会影响效率
+
+## 计算速度相关
+### 目标是尽量保证一个电视剧的hmm推断能在1小时内完成，否则在多次迭代时，需要考虑切换成cpu资源
+### 1. 尝试了用 Cython 优化计算效率，但是 log-lik 计算结果均为 nan，目前无法使用。优先考虑在 Python 中优化
+### 2. 以前向算法为例，可以采取以下优化措施（后向算法类似）：
+#### a. 存储指定参数的所有人脸转移概率（2^n*2^n）和说话人转移概率（经过归一化，n*n*2^n)，避免反复计算
+#### b. 内层上一时刻人脸、说话人状态便利，改为矩阵运算
+#### c. 外层当前时刻人脸，说话人遍历，也可以改为矩阵运算
+### 3. 充分统计量计算：也改为矩阵运算
+
+
+## 内存相关
+### 1. 当处理实际电视剧数据时， U, V 矩阵尺寸较大，有可能导致内存不足。如果出现此类问题，可以先将每季的UV统计量存到本地，然后再读取进行累积
 
 
 class NestedHMM(_AbstractHMM):
@@ -138,6 +152,39 @@ class NestedHMM(_AbstractHMM):
             self.B_S_ = np.zeros((self.n_actors, self.n_actors))
             for actor in range(self.n_actors):
                 self.B_S_[actor] = random_state.dirichlet([2 if i == actor else 1 for i in range(self.n_actors)])
+
+    def _compute_log_transition_matrices(self, face_configs):
+        """预计算用于前向/后向算法的对数转移矩阵。"""
+        n_face_states = len(face_configs)
+        n_actors = self.n_actors
+
+        # 面部状态转移矩阵: log_A_F[prev_f, f]
+        log_A_F_matrix = np.zeros((n_face_states, n_face_states))
+        for i, prev_config in enumerate(face_configs):
+            for j, current_config in enumerate(face_configs):
+                log_A_F_matrix[i, j] = self._compute_face_transition_prob(
+                    prev_config, current_config)
+
+        # 说话人状态转移张量: log_A_S[f, prev_s, s]
+        log_A_S_tensor = np.zeros((n_face_states, n_actors, n_actors))
+        for i, config in enumerate(face_configs):
+            for prev_s in range(n_actors):
+                for s in range(n_actors):
+                    log_A_S_tensor[i, prev_s, s] = \
+                        self._compute_speaker_transition_prob(prev_s, s, config)
+        
+        return log_A_F_matrix, log_A_S_tensor
+
+    def _compute_log_emission_matrix(self, x1_t, x2_t, face_configs):
+        """为单个时间步计算对数发射概率矩阵。"""
+        n_face_states = len(face_configs)
+        n_actors = self.n_actors
+        log_emission_matrix = np.zeros((n_face_states, n_actors))
+        for i, config in enumerate(face_configs):
+            for s in range(n_actors):
+                log_emission_matrix[i, s] = self._compute_emission_prob(
+                    x1_t, x2_t, config, s)
+        return log_emission_matrix
  
     def fit(self, X_1, X_2, lengths=None):
         """训练嵌套HMM模型"""
@@ -155,23 +202,35 @@ class NestedHMM(_AbstractHMM):
         # EM算法主循环
         for n_iter in range(self.n_iter):
             # E步：计算前向后向概率和期望统计量
+            start_time = time.time()
             stats = self._do_estep(X_1, X_2, lengths)
+            estep_time = time.time() - start_time
 
             # 检查收敛
             curr_loglik = stats['log_likelihood'] # 计算当前对数似然
             self.monitor_.report(curr_loglik)
             if self.monitor_.converged:
                 break
-        
+
             # M步：更新参数
+            start_time = time.time()
             self._do_mstep(stats, lengths)
+            mstep_time = time.time() - start_time
+
+            print(f"E步耗时: {estep_time:.4f}秒")
+            print(f"M步耗时: {mstep_time:.4f}秒")
 
         return self
 
     def _do_estep(self, X_1, X_2, lengths):
         """E步：使用前向-后向算法计算期望统计量，同时获取数据总体的log-likelihood"""
+        
         stats = self._initialize_sufficient_statistics()
         log_likelihood = 0.0
+        
+        forward_time = 0.0
+        backward_time = 0.0
+        accumulate_time = 0.0
         
         start_idx = 0
         for length in lengths:
@@ -181,23 +240,36 @@ class NestedHMM(_AbstractHMM):
             seq_X1 = X_1[start_idx:end_idx]
             seq_X2 = X_2[start_idx:end_idx]
             
-            # 前向-后向算法
+            # 前向算法
+            start_time = time.time()
             fwd_lattice = self._do_forward_pass(seq_X1, seq_X2)
+            forward_time += time.time() - start_time
+            
+            # 后向算法
+            start_time = time.time()
             bwd_lattice = self._do_backward_pass(seq_X1, seq_X2)
+            backward_time += time.time() - start_time
             
             # 计算观测序列段的对数似然 $\bbP(\cI_i^{obs}\vert\btheta^{(s)})$
             seq_loglik = logsumexp(fwd_lattice[-1])
             log_likelihood += seq_loglik
             
             # 更新累积统计量，实现对 i=1,...,m 的求和
+            start_time = time.time()
             stats_updated = self._accumulate_sufficient_statistics(
                 stats, seq_X1, seq_X2, fwd_lattice, bwd_lattice, seq_loglik)
+            accumulate_time += time.time() - start_time
             stats = stats_updated
 
             start_idx = end_idx
             
         stats['log_likelihood'] = log_likelihood
         self.log_likelihood_ = log_likelihood
+        
+        print(f"前向算法总时间: {forward_time:.4f}秒")
+        print(f"后向算法总时间: {backward_time:.4f}秒")
+        print(f"累积统计量更新总时间: {accumulate_time:.4f}秒")
+        
         return stats
 
     def _do_forward_pass(self, X_1, X_2):
