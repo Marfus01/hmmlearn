@@ -650,7 +650,7 @@ class NestedHMM(_AbstractHMM):
 
     def predict_proba(self, X_1, X_2, lengths=None):
         """
-        计算给定观测序列时隐藏状态的联合后验概率 P(F_t=f, S_t=s | 当前集全部观测)，以及求和得到的边际后验 P(F_{t, \\rho} =1 | 当前集全部观测), P(S_t=s | 当前集全部观测)
+        计算给定观测序列时隐藏状态的联合后验概率 $\\bbP(F_{i,t,\cdot}=f,S_{i,t}=\\varrho \\vert \cI_i^{obs}, \\btheta^{(s)})$，以及求和得到的边际后验 $\pi_{i,t,\varrho} = \\bbP(F_{i,t,\\rho}=1 \\vert \cI_i^{obs}, \\btheta^{(s)})$ , $\lambda_{i,t,\\varrho} = \\bbP(S_{i,t}=\\varrho \\vert \cI_i^{obs}, \\btheta^{(s)})$
         
         Parameters
         ----------
@@ -666,11 +666,11 @@ class NestedHMM(_AbstractHMM):
         posteriors : dict
             包含各种后验概率的字典:
             - 'face_states': array, shape (n_samples, n_actors)
-              每个时刻每个演员面部出现的后验概率
+              每个时刻每个演员面部出现的后验概率  $ \pi_{i,t,\\varrho} $
             - 'speaker_states': array, shape (n_samples, n_actors)
-              每个时刻每个演员是说话人的后验概率
+              每个时刻每个演员是说话人的后验概率  $ \lambda_{i,t,\\varrho} $
             - 'joint_states': array, shape (n_samples, n_face_states, n_actors)
-              每个时刻联合状态 (face_config, speaker) 的后验概率
+              每个时刻联合状态 (face_config, speaker) 的后验概率 $ \\bbP(F_{i,t,\\cdot}=f,S_{i,t}=\\varrho \\vert \cI_i^{obs}, \\btheta^{(s)}) $
         """
         X_1 = np.array(X_1)
         X_2 = np.array(X_2)
@@ -751,6 +751,7 @@ class NestedHMM(_AbstractHMM):
             - speaker_states : array, shape (n_samples,)
               预测的说话人状态 (0到n_actors-1)
         """
+        # 近似算法，参见 https://sm1les.com/2019/04/10/hidden-markov-model/。面部状态独立预测，说话人状态选择概率最大的演员。
         if algorithm == "map":
             # MAP解码：使用后验概率的最大值
             posteriors = self.predict_proba(X_1, X_2, lengths)
@@ -762,9 +763,9 @@ class NestedHMM(_AbstractHMM):
             speaker_states = np.argmax(posteriors['speaker_states'], axis=1)
             
             return face_states, speaker_states
-            
-        elif algorithm == "viterbi":
-            # Viterbi解码：找到最可能的完整状态序列
+        
+        # Viterbi解码：找到最可能的完整状态序列。时间成本与map 类似，优先选择。
+        elif algorithm == "viterbi":  
             return self._viterbi_decode(X_1, X_2, lengths)
         else:
             raise ValueError(f"Unknown algorithm: {algorithm}")
@@ -840,8 +841,7 @@ class NestedHMM(_AbstractHMM):
         
         # 初始化维特比表格
         # viterbi[t][f][s] = 在时刻t，面部配置f，说话人s的最大概率的对数
-        viterbi = np.full((n_frames, self.n_face_states, self.n_actors), 
-                         -np.inf)
+        viterbi = np.full((n_frames, self.n_face_states, self.n_actors), -np.inf)
         # 回溯路径
         path_face = np.zeros((n_frames, self.n_face_states, self.n_actors), dtype=int)
         path_speaker = np.zeros((n_frames, self.n_face_states, self.n_actors), dtype=int)
