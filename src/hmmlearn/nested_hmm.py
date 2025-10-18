@@ -730,7 +730,7 @@ class NestedHMM(_AbstractHMM):
 
     def predict(self, X_1, X_2, lengths=None, algorithm="viterbi"):
         """
-        预测最可能的隐藏状态序列
+        使用Viterbi算法，预测最可能的隐藏状态序列(面部状态和说话人状态)
         
         Parameters
         ----------
@@ -739,56 +739,14 @@ class NestedHMM(_AbstractHMM):
         X_2 : array-like, shape (n_samples, n_actors)
             面部出现观测，二进制数据
         lengths : array-like of integers, optional
-            每个序列的长度
-        algorithm : str, optional (default: "viterbi")
-            解码算法，目前支持 viterbi 和 "map"
-            
-        Returns
-        -------
-        predictions : tuple
-            - face_states : array, shape (n_samples, n_actors)
-              预测的面部状态 (0或1)
-            - speaker_states : array, shape (n_samples,)
-              预测的说话人状态 (0到n_actors-1)
-        """
-        # 近似算法，参见 https://sm1les.com/2019/04/10/hidden-markov-model/。面部状态独立预测，说话人状态选择概率最大的演员。
-        if algorithm == "map":
-            # MAP解码：使用后验概率的最大值
-            posteriors = self.predict_proba(X_1, X_2, lengths)
-            
-            # 面部状态：每个演员独立预测
-            face_states = (posteriors['face_states'] > 0.5).astype(int)
-            
-            # 说话人状态：选择概率最大的演员
-            speaker_states = np.argmax(posteriors['speaker_states'], axis=1)
-            
-            return face_states, speaker_states
-        
-        # Viterbi解码：找到最可能的完整状态序列。时间成本与map 类似，优先选择。
-        elif algorithm == "viterbi":  
-            return self._viterbi_decode(X_1, X_2, lengths)
-        else:
-            raise ValueError(f"Unknown algorithm: {algorithm}")
+            每个序列的长度，如果为None，则假设是单一序列
 
-    def _viterbi_decode(self, X_1, X_2, lengths=None):
-        """
-        预测隐藏状态序列 (面部状态和说话人状态)
-        
-        Parameters
-        ----------
-        X_1 : array-like, shape (n_samples, n_actors)
-            说话人观测，one-hot编码
-        X_2 : array-like, shape (n_samples, n_actors)
-            面部出现，二进制数据
-        lengths : array-like of integers, optional
-            序列长度，如果为None，则假设是单一序列
-            
         Returns
         -------
         face_states : array, shape (n_samples, n_actors)
-            预测的面部状态序列
+            预测的面部状态序列 (0或1)
         speaker_states : array, shape (n_samples,)
-            预测的说话人状态序列
+            预测的说话人状态序列 (0到n_actors-1)
         """
         X_1 = np.asarray(X_1)
         X_2 = np.asarray(X_2)
@@ -839,14 +797,14 @@ class NestedHMM(_AbstractHMM):
         n_frames = X_1.shape[0]
         face_configs = self._enumerate_face_configs()
         
-        # 初始化维特比表格
-        # viterbi[t][f][s] = 在时刻t，面部配置f，说话人s的最大概率的对数
+        # 初始化维特比表格 $\delta_{t}(f,s)$ 与回溯路径 $\psi_{t}(f,s)$
+        ## $\delta_{t}(f,s)$: 在时刻t，面部配置f，说话人s的最大概率的对数
         viterbi = np.full((n_frames, self.n_face_states, self.n_actors), -np.inf)
-        # 回溯路径
-        path_face = np.zeros((n_frames, self.n_face_states, self.n_actors), dtype=int)
+        ## $\psi_{t}(f,s)$: t 时刻面部配置f，说话人s时，从1到t的路径中，后验概率最大的路径在 $t-1$ 时刻的状态 (f', s')
+        path_face = np.zeros((n_frames, self.n_face_states, self.n_actors), dtype=int)  # NOTE: 形状似乎有问题
         path_speaker = np.zeros((n_frames, self.n_face_states, self.n_actors), dtype=int)
         
-        # 初始化 t=0
+        # 初始化: t=0时刻，已知隐状态与观测的联合概率的对数
         for f_idx, face_config in enumerate(face_configs):
             for speaker in range(self.n_actors):
                 viterbi[0, f_idx, speaker] = self._compute_initial_log_prob(
@@ -920,7 +878,7 @@ class NestedHMM(_AbstractHMM):
         
         return face_states, speaker_states
 
-    def _compute_initial_log_prob(self, face_config, speaker, X_1_t, X_2_t):
+    def _compute_initial_log_prob(self, face_config, speaker, X_1_0, X_2_0):
         """
         计算初始状态的对数概率
         
@@ -930,41 +888,28 @@ class NestedHMM(_AbstractHMM):
             面部配置状态
         speaker : int
             说话人状态
-        X_1_t : array-like, shape (n_actors,)
-            时刻t的说话人观测
-        X_2_t : array-like, shape (n_actors,)
-            时刻t的面部观测
+        X_1_0 : array-like, shape (n_actors,)
+            初始时刻的说话人观测
+        X_2_0 : array-like, shape (n_actors,)
+            初始时刻的面部观测
             
         Returns
         -------
         log_prob : float
-            初始状态的对数概率
+            初始时刻，已知隐状态与观测的对数联合概率
         """
-        # 计算初始面部状态概率
-        face_prob = 0.0
-        for actor in range(self.n_actors):
-            if face_config[actor] == 1:
-                face_prob += np.log(self.alpha_[actor])
-            else:
-                face_prob += np.log(1 - self.alpha_[actor])
-        
-        # 计算初始说话人概率 P(S_1 | F_1)
-        speaker_logits = self.beta_ + self.gamma1_ * face_config[speaker]
-        speaker_probs = softmax(speaker_logits)
-        speaker_prob = np.log(speaker_probs[speaker])
-        
-        # 计算观测概率 - 面部 P(F_hat | F)
-        face_obs_prob = 0.0
-        for actor in range(self.n_actors):
-            face_obs_prob += np.log(self.B_F_[actor, face_config[actor], X_2_t[actor]])
-        
-        # 计算观测概率 - 说话人 P(S_hat | S)
-        speaker_obs_prob = np.log(self.B_S_[speaker, np.argmax(X_1_t)])
-        
-        return face_prob + speaker_prob + face_obs_prob + speaker_obs_prob
+        # 对数初始面部隐藏状态概率
+        log_face_init_prob = self._compute_face_initial_prob(face_config)
+        # 对数初始说话人隐藏状态概率 P(S_1 | F_1)
+        log_speaker_init_prob = self._compute_speaker_initial_prob(speaker, face_config)
+        # 对数观测概率 P(F_hat | F)*P(S_hat | S)
+        log_obs_prob = self._compute_emission_prob(X_1_0, X_2_0, face_config, speaker)
+
+        log_prob = log_face_init_prob + log_speaker_init_prob + log_obs_prob
+        return log_prob
     
     def _compute_transition_log_prob(self, prev_face_config, prev_speaker, 
-                                   curr_face_config, curr_speaker, X_1_t, X_2_t):
+                                     curr_face_config, curr_speaker, X_1_t, X_2_t):
         """
         计算状态转移的对数概率
         
@@ -986,30 +931,14 @@ class NestedHMM(_AbstractHMM):
         Returns
         -------
         log_prob : float
-            状态转移的对数概率
+            条件在上一时刻状态下，当前时刻状态的对数概率
         """
-        # 计算面部状态转移概率 P(F_t | F_{t-1})
-        face_trans_prob = 0.0
-        for actor in range(self.n_actors):
-            prev_state = prev_face_config[actor]
-            curr_state = curr_face_config[actor]
-            face_trans_prob += np.log(self.A_F_[actor, prev_state, curr_state])
+        # 对数面部状态转移概率 P(F_t | F_{t-1})
+        log_face_trans_prob = self._compute_face_transition_prob(prev_face_config, curr_face_config)
+        # 对数说话人状态转移概率 P(S_t | S_{t-1}, F_t)
+        log_speaker_trans_prob = self._compute_speaker_transition_prob(prev_speaker, curr_speaker, curr_face_config)
+        # 对数观测概率  P(F_hat_t | F_t)*P(S_hat_t | S_t)
+        log_obs_prob = self._compute_emission_prob(X_1_t, X_2_t, curr_face_config, curr_speaker)
         
-        # 计算说话人状态转移概率 P(S_t | S_{t-1}, F_t)
-        # 使用softmax确保概率归一化
-        all_logits = np.zeros(self.n_actors)
-        for s in range(self.n_actors):
-            all_logits[s] = self.A_S_[prev_speaker, s] + self.gamma2_ * curr_face_config[s]
-        
-        speaker_trans_probs = softmax(all_logits)
-        speaker_trans_prob = np.log(speaker_trans_probs[curr_speaker])
-        
-        # 计算观测概率 - 面部 P(F_hat_t | F_t)
-        face_obs_prob = 0.0
-        for actor in range(self.n_actors):
-            face_obs_prob += np.log(self.B_F_[actor, curr_face_config[actor], X_2_t[actor]])
-        
-        # 计算观测概率 - 说话人 P(S_hat_t | S_t)
-        speaker_obs_prob = np.log(self.B_S_[curr_speaker, np.argmax(X_1_t)])
-        
-        return face_trans_prob + speaker_trans_prob + face_obs_prob + speaker_obs_prob
+        log_prob = log_face_trans_prob + log_speaker_trans_prob + log_obs_prob
+        return log_prob
