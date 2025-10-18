@@ -62,8 +62,8 @@ class NestedHMM(_AbstractHMM):
 
         # 添加缓存变量，避免反复计算
         ## 预计算的转移矩阵（在每次EM迭代后需要更新）
-        self._log_trans_face = None # [prev_f, f]
-        self._log_trans_speaker = None  # [f, prev_s, s]
+        self._log_trans_face = np.zeros((self.n_face_states, self.n_face_states))  # [prev_f, f]
+        self._log_trans_speaker = np.zeros((self.n_actors, self.n_actors, self.n_face_states))  # [prev_s, s, f]
         ## 所有可能的面部配置
         self.face_configs = self._enumerate_face_configs()
 
@@ -159,40 +159,26 @@ class NestedHMM(_AbstractHMM):
             self.B_S_ = np.zeros((self.n_actors, self.n_actors))
             for actor in range(self.n_actors):
                 self.B_S_[actor] = random_state.dirichlet([2 if i == actor else 1 for i in range(self.n_actors)])
+        
+        self._update_log_transition_matrices()
 
-    def _compute_log_transition_matrices(self):
+    def _update_log_transition_matrices(self):
         """预计算用于前向/后向算法的对数转移矩阵。"""
         n_face_states = len(self.face_configs)
         n_actors = self.n_actors
 
         # 面部状态转移矩阵: log_A_F[prev_f, f]
-        log_A_F_matrix = np.zeros((n_face_states, n_face_states))
         for i, prev_config in enumerate(self.face_configs):
             for j, current_config in enumerate(self.face_configs):
-                log_A_F_matrix[i, j] = self._compute_face_transition_prob(
+                self._log_trans_face[i, j] = self._compute_face_transition_prob(
                     prev_config, current_config)
 
         # 说话人状态转移张量: log_A_S[f, prev_s, s]
-        log_A_S_tensor = np.zeros((n_face_states, n_actors, n_actors))
         for i, config in enumerate(self.face_configs):
             for prev_s in range(n_actors):
-                for s in range(n_actors):
-                    log_A_S_tensor[i, prev_s, s] = \
-                        self._compute_speaker_transition_prob(prev_s, s, config)
-        
-        return log_A_F_matrix, log_A_S_tensor
+                self._log_trans_speaker[prev_s, :, i] = self._compute_speaker_transition_probs(
+                    prev_s, config)
 
-    def _compute_log_emission_matrix(self, x1_t, x2_t):
-        """为单个时间步计算对数发射概率矩阵。"""
-        n_face_states = len(self.face_configs)
-        n_actors = self.n_actors
-        log_emission_matrix = np.zeros((n_face_states, n_actors))
-        for i, config in enumerate(self.face_configs):
-            for s in range(n_actors):
-                log_emission_matrix[i, s] = self._compute_emission_prob(
-                    x1_t, x2_t, config, s)
-        return log_emission_matrix
- 
     def fit(self, X_1, X_2, lengths=None):
         """训练嵌套HMM模型"""
         X_1 = np.array(X_1)
@@ -303,32 +289,26 @@ class NestedHMM(_AbstractHMM):
         
         # 递推
         for t in range(1, n_samples):
+            ## 检查 fwd_lattice[t-1, :, :] 中是否有 -np.inf
+            prev_fwd_lattice = fwd_lattice[t-1, :, :] # shape (n_face_configs, n_actors), corresponds to prev_face_config and prev_speaker
+            num_inf = np.sum(prev_fwd_lattice == -np.inf)
+            total_elements = prev_fwd_lattice.size
+            if num_inf == total_elements:
+                continue
+            elif num_inf > 0:
+                print(f"t={t}: fwd_lattice[t-1] contains {num_inf} -np.inf out of {total_elements} elements")
+
             ## 当前时刻所有可能的 (f, \varrho)
             for f_idx, face_config in enumerate(self.face_configs):
                 for speaker in range(self.n_actors):
-                    log_probs = []
-
-                    ## 前一时刻所有可能的 (f', \varrho')
-                    for prev_f_idx, prev_face_config in enumerate(self.face_configs):
-                        for prev_speaker in range(self.n_actors):
-                            # NOTE: 后面可以打印调试，看看这里是否有大量的 -inf
-                            if fwd_lattice[t-1, prev_f_idx, prev_speaker] == -np.inf:   # 如果前一时刻的 U 为负无穷，则跳过
-                                continue
-                                
-                            # 面部转移概率
-                            log_face_trans = self._compute_face_transition_prob(prev_face_config, face_config)
-                            # 说话人转移概率
-                            log_speaker_trans = self._compute_speaker_transition_prob(prev_speaker, speaker, face_config)
-                            # 发射概率
-                            log_emission = self._compute_emission_prob(X_1[t], X_2[t], face_config, speaker)
-                            
-                            # 计算迭代公式里被求和的每一项的对数
-                            log_prob = (fwd_lattice[t-1, prev_f_idx, prev_speaker] + 
-                                      log_face_trans + log_speaker_trans + log_emission)
-                            log_probs.append(log_prob)
+                    # 获获取前一时刻所有可能的 (f', \varrho') 对应的各种概率
+                    log_face_trans = self._log_trans_face[:, f_idx]  # shape (n_face_configs,), each element corresponds to a prev_face_config
+                    log_speaker_trans = self._log_trans_speaker[:, speaker, f_idx]  # shape (n_actors,), each element corresponds to a prev_speaker
+                    log_emission = self._compute_emission_prob(X_1[t], X_2[t], face_config, speaker)                   
                     
-                    if log_probs:
-                        fwd_lattice[t, f_idx, speaker] = logsumexp(log_probs)   # 当前时刻的 U
+                    # get log_probs for all (prev_f, prev_s)
+                    log_probs = prev_fwd_lattice + log_face_trans[:, None] + log_speaker_trans[None, :] + log_emission
+                    fwd_lattice[t, f_idx, speaker] = logsumexp(log_probs)
         
         return fwd_lattice
 
@@ -350,31 +330,27 @@ class NestedHMM(_AbstractHMM):
         
         # 反向递推
         for t in range(n_samples - 2, -1, -1):
+            ## 检查 bwd_lattice[t+1, :, :] 中是否有 -np.inf
+            next_bwd_lattice = bwd_lattice[t+1, :, :] # shape (n_face_configs, n_actors), corresponds to next_face_config and next_speaker
+            num_inf = np.sum(next_bwd_lattice == -np.inf)
+            total_elements = next_bwd_lattice.size
+            if num_inf == total_elements:
+                continue
+            elif num_inf > 0:
+                print(f"t={t}: bwd_lattice[t+1] contains {num_inf} -np.inf out of {total_elements} elements")
+
             ## 当前时刻所有可能的 (f, \varrho)
             for f_idx, face_config in enumerate(self.face_configs):
                 for speaker in range(self.n_actors):
-                    log_probs = []
-                    
-                    ## 下一时刻所有可能的 (f', \varrho')
-                    for next_f_idx, next_face_config in enumerate(self.face_configs):
-                        for next_speaker in range(self.n_actors):
-                            # NOTE: 后面可以打印调试，看看这里是否有大量的 -inf
-                            if bwd_lattice[t+1, next_f_idx, next_speaker] == -np.inf:
-                                continue
-                                
-                            # 面部转移概率
-                            log_face_trans = self._compute_face_transition_prob(face_config, next_face_config)
-                            # 说话人转移概率  
-                            log_speaker_trans = self._compute_speaker_transition_prob(speaker, next_speaker, next_face_config)
-                            # 发射概率
-                            log_emission = self._compute_emission_prob(X_1[t+1], X_2[t+1], next_face_config, next_speaker)
-                            
-                            log_prob = (log_face_trans + log_speaker_trans + log_emission + 
-                                      bwd_lattice[t+1, next_f_idx, next_speaker])
-                            log_probs.append(log_prob)
-                    
-                    if log_probs:
-                        bwd_lattice[t, f_idx, speaker] = logsumexp(log_probs)
+                    # 获取后一时刻所有可能的 (f', \varrho') 对应的各种概率
+                    log_face_trans = self._log_trans_face[f_idx, :]  # shape (n_face_configs,), each element corresponds to a next_face_config
+                    log_speaker_trans = self._log_trans_speaker[speaker, :, :]  # shape (n_actors, n_face_configs)
+                    log_speaker_trans = log_speaker_trans.T  # shape (n_face_configs, n_actors), each element corresponds to next_face_config and next_speaker
+                    log_emission = self._compute_emission_prob(X_1[t+1], X_2[t+1], face_config, speaker)
+
+                    # get log_probs for all (next_f, next_s)
+                    log_probs = next_bwd_lattice + log_face_trans[:, None] + log_speaker_trans + log_emission
+                    bwd_lattice[t, f_idx, speaker] = logsumexp(log_probs)
         
         return bwd_lattice
 
@@ -394,48 +370,50 @@ class NestedHMM(_AbstractHMM):
         """
         计算面部配置的转移概率 $\prod_{\varrho\in\cP} \bbP(F_{i,t,\varrho}\vert F_{i,t-1,\varrho})$ 的对数
         """
-        log_prob = 0.0
-        for actor in range(self.n_actors):
-            prev_state = prev_config[actor]
-            curr_state = curr_config[actor]
-            log_prob += np.log(self.A_F_[actor, prev_state, curr_state])
+        log_prob = sum(list(map(lambda actor: np.log(self.A_F_[actor, prev_config[actor], curr_config[actor]]), range(self.n_actors))))
         return log_prob
+
+    def _compute_speaker_initial_probs(self, face_config):
+        """
+        计算所有说话人的初始概率 $\bbP(S_{i,1}=\cdot \vert F_{i,1,\cdot}=f)$ 的对数
+        """
+        logits = np.array([self.beta_[s] + self.gamma1_ * face_config[s] for s in range(self.n_actors)])    # 每个元素代表说话人s的logit
+        log_probs = logits - logsumexp(logits)  # of shape (n_actors,), 每个元素代表说话人为s的log概率
+        return log_probs
 
     def _compute_speaker_initial_prob(self, speaker, face_config):
         """
         计算说话人的初始概率 $\bbP(S_{i,1}=\varrho\vert F_{i,1,\cdot}=f)$ 的对数
         """
-        # NOTE: 这里算出了所有说话人的概率，但是却只返回了 speaker 对应的概率，后续可以优化
-        logits = np.array([self.beta_[s] + self.gamma1_ * face_config[s] for s in range(self.n_actors)])    # 每个元素代表说话人s的logit
-        log_probs = logits - logsumexp(logits)  # of shape (n_actors,), 每个元素代表说话人为s的log概率
+        log_probs = self._compute_speaker_initial_probs(face_config)
         return log_probs[speaker]
+
+    def _compute_speaker_transition_probs(self, prev_speaker, face_config):
+        """
+        计算在已知上一时刻说话人时，转移到所有说话人的概率 $\bbP(S_{i,t+1}=\cdot \vert S_{i,t}=\varrho',F_{i,t+1,\cdot}=f)$ 的对数
+        """
+        logits = np.array(list(map(lambda s: self.A_S_[prev_speaker, s] + self.gamma2_ * face_config[s], range(self.n_actors))))
+        log_probs = np.asarray(logits - logsumexp(logits)).flatten()
+        return log_probs
 
     def _compute_speaker_transition_prob(self, prev_speaker, curr_speaker, face_config):
         """
         计算说话人转移概率 $\bbP(S_{i,t+1}=\varrho\vert S_{i,t}=\varrho',F_{i,t+1,\cdot}=f)$ 的对数
         """
-        # NOTE: 这里算出了所有说话人的概率，但是却只返回了 speaker 对应的概率，后续可以优化
-        logits = np.array([self.A_S_[prev_speaker, s] + self.gamma2_ * face_config[s] 
-                          for s in range(self.n_actors)])
-        log_probs = logits - logsumexp(logits)
+        log_probs = self._compute_speaker_transition_probs(prev_speaker, face_config)
         return log_probs[curr_speaker]
 
     def _compute_emission_prob(self, x1, x2, face_config, speaker):
         """
         计算发射概率$\bB_S(S_{i,t},\hat S_{i,t}) \prod_{\varrho\in\cP} \bB_{\varrho}(F_{i,t,\varrho},\hat F_{i,t,\varrho})$ 的对数
         """
-        log_prob = 0.0
-        
+        # 面部观测概率
+        log_prob = sum(list(map(lambda actor: np.log(self.B_F_[actor, face_config[actor], x2[actor]]), range(self.n_actors))))
+
         # 说话人观测概率
         speaker_obs = np.argmax(x1)  # one-hot to index
         log_prob += np.log(self.B_S_[speaker, speaker_obs])
-        
-        # 面部观测概率
-        for actor in range(self.n_actors):
-            true_face = face_config[actor]
-            obs_face = x2[actor]
-            log_prob += np.log(self.B_F_[actor, true_face, obs_face])
-            
+
         return log_prob
 
     def _initialize_sufficient_statistics(self):
@@ -575,6 +553,9 @@ class NestedHMM(_AbstractHMM):
                     self.B_S_[speaker] = np.full(self.n_actors, 1 / self.n_actors)
                     self.B_S_[speaker, -1] = 1 - self.B_S_[speaker, :-1].sum()
                     print(f"Warning: Emission probabilities for speaker {speaker} were not updated due to insufficient data. Reset to uniform distribution.")
+
+        # 更新预计算的对数转移矩阵
+        self._update_log_transition_matrices()
 
     def _update_speaker_initial_params(self, stats):
         """使用数值优化更新说话人初始参数"""

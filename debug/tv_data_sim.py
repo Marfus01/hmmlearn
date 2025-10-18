@@ -197,7 +197,7 @@ print("\n=== 训练模型 ===")
 start_time = time.time()
 print("训练开始时间:", time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(start_time)))
 
-model = NestedHMM(n_actors=3, n_iter=1, verbose=True, tol=1e-3)
+model = NestedHMM(n_actors=3, n_iter=5, verbose=True, tol=1e-3)
 model.fit(X_1, X_2, lengths)
 
 end_time = time.time()
