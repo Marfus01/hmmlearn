@@ -728,7 +728,7 @@ class NestedHMM(_AbstractHMM):
             'joint_states': joint_posteriors
         }
 
-    def predict(self, X_1, X_2, lengths=None, algorithm="viterbi"):
+    def predict(self, X_1, X_2, lengths=None):
         """
         使用Viterbi算法，预测最可能的隐藏状态序列(面部状态和说话人状态)
         

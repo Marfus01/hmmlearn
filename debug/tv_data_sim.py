@@ -248,45 +248,11 @@ print(pred_probs['face_states'].shape)
 print(pred_probs['speaker_states'].shape)
 print(pred_probs['joint_states'].shape)
 
-# MAP 解码结果
-print("\n=== MAP 解码结果 ===")
-start_time = time.time()
-face_states, speaker_states = model.predict(X_1, X_2, lengths)
-end_time = time.time()
-print("MAP 解码耗时:", end_time - start_time, "秒")
-
-# 面部状态对比 (MAP)
-print("\n--- 面部状态对比 (MAP) ---")
-print("真实状态 -> 观测状态 -> MAP推断状态 (转置显示，每列为一个时间步)")
-for actor_id in actors:
-    print(f"\n演员 {actor_id}:")
-    comparison_face = np.vstack([
-        true_states['face_states'][:, actor_id],  # 真实状态
-        X_2[:, actor_id],                         # 观测状态  
-        face_states[:, actor_id]                  # MAP推断状态
-    ])
-    print("真实:", comparison_face[0, :])
-    print("观测:", comparison_face[1, :])
-    print("MAP: ", comparison_face[2, :])
-
-# 说话人状态对比 (MAP)
-print("\n--- 说话人状态对比 (MAP) ---")
-print("真实状态 -> 观测状态 -> MAP推断状态")
-comparison_speaker = np.vstack([
-    true_states['speaker_states'],  # 真实状态
-    np.argmax(X_1, axis=1),        # 观测状态 (从one-hot转回标签)
-    speaker_states                  # MAP推断状态
-])
-print("真实:", comparison_speaker[0, :])
-print("观测:", comparison_speaker[1, :])
-print("MAP: ", comparison_speaker[2, :])
-
-
 
 # viterbi 解码结果
 print("\n=== Viterbi 解码结果 ===")
 start_time = time.time()
-face_states_viterbi, speaker_states_viterbi = model.predict(X_1, X_2, lengths, algorithm="viterbi")
+face_states_viterbi, speaker_states_viterbi = model.predict(X_1, X_2, lengths)
 end_time = time.time()
 print("viterbi解码耗时:", end_time - start_time, "秒")
 
@@ -318,23 +284,18 @@ print("Viterbi:", comparison_speaker_viterbi[2, :])
 
 # 计算准确率
 print("\n=== 准确率统计 ===")
-# 面部状态准确率
-face_acc_map = np.mean(true_states['face_states'] == face_states)
+## 面部状态准确率
 face_acc_viterbi = np.mean(true_states['face_states'] == face_states_viterbi)
 face_acc_observed = np.mean(true_states['face_states'] == X_2)
-
-# 说话人状态准确率
-speaker_acc_map = np.mean(true_states['speaker_states'] == speaker_states)
+## 说话人状态准确率
 speaker_acc_viterbi = np.mean(true_states['speaker_states'] == speaker_states_viterbi)
 speaker_acc_observed = np.mean(true_states['speaker_states'] == np.argmax(X_1, axis=1))
 
 print("\n=== 准确率分析 ===")
 print(f"面部状态准确率:")
 print(f"  观测准确率: {face_acc_observed:.3f}")
-print(f"  MAP准确率:  {face_acc_map:.3f}")
 print(f"  Viterbi准确率: {face_acc_viterbi:.3f}")
 
 print(f"说话人状态准确率:")
 print(f"  观测准确率: {speaker_acc_observed:.3f}")
-print(f"  MAP准确率:  {speaker_acc_map:.3f}")
 print(f"  Viterbi准确率: {speaker_acc_viterbi:.3f}")
