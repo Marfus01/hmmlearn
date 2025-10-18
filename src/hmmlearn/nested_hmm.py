@@ -801,8 +801,8 @@ class NestedHMM(_AbstractHMM):
         ## $\delta_{t}(f,s)$: 在时刻t，面部配置f，说话人s的最大概率的对数
         viterbi = np.full((n_frames, self.n_face_states, self.n_actors), -np.inf)
         ## $\psi_{t}(f,s)$: t 时刻面部配置f，说话人s时，从1到t的路径中，后验概率最大的路径在 $t-1$ 时刻的状态 (f', s')
-        path_face = np.zeros((n_frames, self.n_face_states, self.n_actors), dtype=int)  # NOTE: 形状似乎有问题
-        path_speaker = np.zeros((n_frames, self.n_face_states, self.n_actors), dtype=int)
+        path_face = np.zeros((n_frames, self.n_face_states, self.n_actors), dtype=int)  # 每个元素是 f'在 face_configs 中的索引
+        path_speaker = np.zeros((n_frames, self.n_face_states, self.n_actors), dtype=int) # 每个元素是s'的索引
         
         # 初始化: t=0时刻，已知隐状态与观测的联合概率的对数
         for f_idx, face_config in enumerate(face_configs):
@@ -813,6 +813,7 @@ class NestedHMM(_AbstractHMM):
         
         # 前向传播 t=1到n_frames-1
         for t in range(1, n_frames):
+            # 计算每个当前状态对应的 $\delta_{t}(f,s)$
             for f_idx, face_config in enumerate(face_configs):
                 for speaker in range(self.n_actors):
                     max_prob = -np.inf
@@ -835,16 +836,19 @@ class NestedHMM(_AbstractHMM):
                             # 总概率
                             total_prob = viterbi[t-1, prev_f_idx, prev_speaker] + trans_log_prob
                             
+                            # 更新最大概率和最佳前一状态
                             if total_prob > max_prob:
                                 max_prob = total_prob
                                 best_prev_f = prev_f_idx
                                 best_prev_s = prev_speaker
                     
+                    # 确定 $\delta_{t}(f,s)$
                     viterbi[t, f_idx, speaker] = max_prob
+                    # 确定 $\psi_{t}(f,s)$
                     path_face[t, f_idx, speaker] = best_prev_f
                     path_speaker[t, f_idx, speaker] = best_prev_s
         
-        # 找到最优路径的结束状态
+        # 找到最优路径的结束状态 $i_T^\ast$: best_end_f, best_end_s
         max_prob = -np.inf
         best_end_f = 0
         best_end_s = 0
@@ -858,10 +862,8 @@ class NestedHMM(_AbstractHMM):
         # 回溯最优路径
         face_states = np.zeros((n_frames, self.n_actors), dtype=int)
         speaker_states = np.zeros(n_frames, dtype=int)
-        
         curr_f = best_end_f
         curr_s = best_end_s
-        
         for t in range(n_frames-1, -1, -1):
             # 记录当前状态
             face_config = face_configs[curr_f]
