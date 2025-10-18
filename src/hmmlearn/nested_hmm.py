@@ -650,7 +650,7 @@ class NestedHMM(_AbstractHMM):
 
     def predict_proba(self, X_1, X_2, lengths=None):
         """
-        计算给定观测序列时隐藏状态的后验概率
+        计算给定观测序列时隐藏状态的联合后验概率 P(F_t=f, S_t=s | 当前集全部观测)，以及求和得到的边际后验 P(F_{t, \\rho} =1 | 当前集全部观测), P(S_t=s | 当前集全部观测)
         
         Parameters
         ----------
@@ -685,40 +685,37 @@ class NestedHMM(_AbstractHMM):
         face_posteriors = np.zeros((n_samples, self.n_actors))
         speaker_posteriors = np.zeros((n_samples, self.n_actors))
         joint_posteriors = np.zeros((n_samples, self.n_face_states, self.n_actors))
-        
+
+        # 对每一集的数据        
         start_idx = 0
         for length in lengths:
             end_idx = start_idx + length
             
-            # 获取当前序列段
+            ## 获取当前序列段
             seq_X1 = X_1[start_idx:end_idx]
             seq_X2 = X_2[start_idx:end_idx]
             
-            # 计算前向和后向概率
+            ## 计算前向和后向概率，以及序列的对数似然
             fwd_lattice = self._do_forward_pass(seq_X1, seq_X2)
             bwd_lattice = self._do_backward_pass(seq_X1, seq_X2)
-            
-            # 计算序列的对数似然
             seq_loglik = logsumexp(fwd_lattice[-1])
             
-            # 计算每个时刻的后验概率
+            ## 计算每个时刻的后验概率
             for t in range(length):
-                # 联合后验概率 P(F_t=f, S_t=s | 全部观测)
+                ### 获取并存储联合后验概率 P(F_t=f, S_t=s | 全部观测)
                 log_gamma = fwd_lattice[t] + bwd_lattice[t] - seq_loglik
                 gamma = np.exp(log_gamma)
+                joint_posteriors[start_idx + t] = gamma # of shape (n_face_states, n_actors)
                 
-                # 存储联合后验概率
-                joint_posteriors[start_idx + t] = gamma
-                
-                # 计算面部状态的边际后验概率
+                ### 计算面部状态的边际后验概率 P(F_{t, \\rho} =1 | 当前集全部观测)
                 for actor in range(self.n_actors):
                     face_prob = 0.0
                     for f_idx, face_config in enumerate(face_configs):
-                        if face_config[actor] == 1:  # 该演员面部出现
-                            face_prob += gamma[f_idx].sum()  # 对所有说话人求和
+                        if face_config[actor] == 1:  # 演员 $\rho$ 面部出现
+                            face_prob += gamma[f_idx].sum()  # 对所有说话人s求和
                     face_posteriors[start_idx + t, actor] = face_prob
                 
-                # 计算说话人状态的边际后验概率  
+                ### 计算说话人状态的边际后验概率 P(S_t=s | 当前集全部观测)
                 for speaker in range(self.n_actors):
                     speaker_prob = gamma[:, speaker].sum()  # 对所有面部配置求和
                     speaker_posteriors[start_idx + t, speaker] = speaker_prob
