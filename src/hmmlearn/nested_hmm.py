@@ -164,16 +164,15 @@ class NestedHMM(_AbstractHMM):
 
     def _update_log_transition_matrices(self):
         """预计算用于前向/后向算法的对数转移矩阵。"""
-        n_face_states = len(self.face_configs)
         n_actors = self.n_actors
 
-        # 面部状态转移矩阵: log_A_F[prev_f, f]
+        # 面部状态转移矩阵: _log_trans_face [prev_f, f]
         for i, prev_config in enumerate(self.face_configs):
             for j, current_config in enumerate(self.face_configs):
                 self._log_trans_face[i, j] = self._compute_face_transition_prob(
                     prev_config, current_config)
 
-        # 说话人状态转移张量: log_A_S[f, prev_s, s]
+        # 说话人状态转移张量: _log_trans_speaker[prev_s, s, f]
         for i, config in enumerate(self.face_configs):
             for prev_s in range(n_actors):
                 self._log_trans_speaker[prev_s, :, i] = self._compute_speaker_transition_probs(
@@ -346,10 +345,13 @@ class NestedHMM(_AbstractHMM):
                     log_face_trans = self._log_trans_face[f_idx, :]  # shape (n_face_configs,), each element corresponds to a next_face_config
                     log_speaker_trans = self._log_trans_speaker[speaker, :, :]  # shape (n_actors, n_face_configs)
                     log_speaker_trans = log_speaker_trans.T  # shape (n_face_configs, n_actors), each element corresponds to next_face_config and next_speaker
-                    log_emission = self._compute_emission_prob(X_1[t+1], X_2[t+1], face_config, speaker)
+                    # NOTE: 有误，应使用next_face_config，next_speaker
+                    log_face_emission = list(map(lambda next_f: self._compute_face_emmission_prob(X_2[t+1], self.face_configs[next_f]), range(self.n_face_states)))
+                    log_face_emission = np.array(log_face_emission)  # shape (n_face_configs,), each element corresponds to a next_face_config
+                    log_speaker_emission = np.log(self.B_S_[:, np.argmax(X_1[t+1])])  # shape (n_actors,), each element corresponds to a next_speaker
 
                     # get log_probs for all (next_f, next_s)
-                    log_probs = next_bwd_lattice + log_face_trans[:, None] + log_speaker_trans + log_emission
+                    log_probs = next_bwd_lattice + log_face_trans[:, None] + log_speaker_trans + log_face_emission[:, None] + log_speaker_emission[None, :]
                     bwd_lattice[t, f_idx, speaker] = logsumexp(log_probs)
         
         return bwd_lattice
@@ -403,17 +405,31 @@ class NestedHMM(_AbstractHMM):
         log_probs = self._compute_speaker_transition_probs(prev_speaker, face_config)
         return log_probs[curr_speaker]
 
+    def _compute_face_emmission_prob(self, observed_state, face_state):
+        """
+        计算面部观测概率 $\prod_{\varrho\in\cP} \bB_{\varrho}(F_{i,t,\varrho},\hat F_{i,t,\varrho})$ 的对数
+        """
+        # 面部观测概率
+        log_prob = sum(list(map(lambda actor: np.log(self.B_F_[actor, face_state[actor], observed_state[actor]]), range(self.n_actors))))
+        return log_prob
+
+    def _compute_speaker_emission_prob(self, observed_speaker, speaker):
+        """
+        计算说话人观测概率 $\bB_S(S_{i,t},\hat S_{i,t})$ 的对数
+        """
+        log_prob = np.log(self.B_S_[speaker, observed_speaker])
+        return log_prob
+
     def _compute_emission_prob(self, x1, x2, face_config, speaker):
         """
         计算发射概率$\bB_S(S_{i,t},\hat S_{i,t}) \prod_{\varrho\in\cP} \bB_{\varrho}(F_{i,t,\varrho},\hat F_{i,t,\varrho})$ 的对数
         """
         # 面部观测概率
-        log_prob = sum(list(map(lambda actor: np.log(self.B_F_[actor, face_config[actor], x2[actor]]), range(self.n_actors))))
+        log_prob = self._compute_face_emmission_prob(x2, face_config)
 
         # 说话人观测概率
         speaker_obs = np.argmax(x1)  # one-hot to index
-        log_prob += np.log(self.B_S_[speaker, speaker_obs])
-
+        log_prob += self._compute_speaker_emission_prob(speaker_obs, speaker)
         return log_prob
 
     def _initialize_sufficient_statistics(self):
