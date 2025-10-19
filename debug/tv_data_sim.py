@@ -197,105 +197,105 @@ print("\n=== 训练模型 ===")
 start_time = time.time()
 print("训练开始时间:", time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(start_time)))
 
-model = NestedHMM(n_actors=3, n_iter=5, verbose=True, tol=1e-3)
+model = NestedHMM(n_actors=3, n_iter=3, verbose=True, tol=1e-3)
 model.fit(X_1, X_2, lengths)
 
 end_time = time.time()
 print("训练结束时间:", time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(end_time)))
 print("训练耗时:", end_time - start_time, "秒")
 
-# 对比模型参数的真实值和拟合值
-print("\n=== 学习到的参数对比 ===")
-print("α (面部出现初始概率):")
-print("真实:", np.round(params['alpha'], 3))
-print("学习:", np.round(model.alpha_, 3))
+# # 对比模型参数的真实值和拟合值
+# print("\n=== 学习到的参数对比 ===")
+# print("α (面部出现初始概率):")
+# print("真实:", np.round(params['alpha'], 3))
+# print("学习:", np.round(model.alpha_, 3))
 
-print("\nβ (说话人初始偏好):")
-print("真实:", np.round(params['beta'], 3))
-print("学习:", np.round(model.beta_, 3))
+# print("\nβ (说话人初始偏好):")
+# print("真实:", np.round(params['beta'], 3))
+# print("学习:", np.round(model.beta_, 3))
 
-print("\nγ1 (面部对说话人初始影响):")
-print("真实:", np.round(params['gamma1'], 3))
-print("学习:", np.round(model.gamma1_, 3))
+# print("\nγ1 (面部对说话人初始影响):")
+# print("真实:", np.round(params['gamma1'], 3))
+# print("学习:", np.round(model.gamma1_, 3))
 
-print("\nγ2 (面部对说话人转移影响):")
-print("真实:", np.round(params['gamma2'], 3))
-print("学习:", np.round(model.gamma2_, 3))
+# print("\nγ2 (面部对说话人转移影响):")
+# print("真实:", np.round(params['gamma2'], 3))
+# print("学习:", np.round(model.gamma2_, 3))
 
-print("\nA_F (面部转移矩阵):")
-for i in range(n_actors):
-    print(f"演员{i} 真实:", np.round(params['A_F'][i], 3))
-    print(f"演员{i} 学习:", np.round(model.A_F_[i], 3))
+# print("\nA_F (面部转移矩阵):")
+# for i in range(n_actors):
+#     print(f"演员{i} 真实:", np.round(params['A_F'][i], 3))
+#     print(f"演员{i} 学习:", np.round(model.A_F_[i], 3))
 
-print("\nA_S (说话人转移矩阵):")
-print("真实:", np.round(params['A_S'], 3))
-print("学习:", np.round(model.A_S_, 3))
+# print("\nA_S (说话人转移矩阵):")
+# print("真实:", np.round(params['A_S'], 3))
+# print("学习:", np.round(model.A_S_, 3))
 
-print("\nB_F (面部识别混淆矩阵):")
-for i in range(n_actors):
-    print(f"演员{i} 真实:", np.round(params['B_F'][i], 3))
-    print(f"演员{i} 学习:", np.round(model.B_F_[i], 3))
+# print("\nB_F (面部识别混淆矩阵):")
+# for i in range(n_actors):
+#     print(f"演员{i} 真实:", np.round(params['B_F'][i], 3))
+#     print(f"演员{i} 学习:", np.round(model.B_F_[i], 3))
 
-print("\nB_S (说话人识别混淆矩阵):")
-print("真实:", np.round(params['B_S'], 3))
-print("学习:", np.round(model.B_S_, 3))
+# print("\nB_S (说话人识别混淆矩阵):")
+# print("真实:", np.round(params['B_S'], 3))
+# print("学习:", np.round(model.B_S_, 3))
 
-# 计算后验概率
-print("\n=== 计算后验概率 ===")
-pred_probs = model.predict_proba(X_1, X_2, lengths)
-print("后验概率形状: ")
-print(pred_probs['face_states'].shape)
-print(pred_probs['speaker_states'].shape)
-print(pred_probs['joint_states'].shape)
+# # 计算后验概率
+# print("\n=== 计算后验概率 ===")
+# pred_probs = model.predict_proba(X_1, X_2, lengths)
+# print("后验概率形状: ")
+# print(pred_probs['face_states'].shape)
+# print(pred_probs['speaker_states'].shape)
+# print(pred_probs['joint_states'].shape)
 
 
-# viterbi 解码结果
-print("\n=== Viterbi 解码结果 ===")
-start_time = time.time()
-face_states_viterbi, speaker_states_viterbi = model.predict(X_1, X_2, lengths)
-end_time = time.time()
-print("viterbi解码耗时:", end_time - start_time, "秒")
+# # viterbi 解码结果
+# print("\n=== Viterbi 解码结果 ===")
+# start_time = time.time()
+# face_states_viterbi, speaker_states_viterbi = model.predict(X_1, X_2, lengths)
+# end_time = time.time()
+# print("viterbi解码耗时:", end_time - start_time, "秒")
 
-# 面部状态对比 (Viterbi)
-print("\n--- 面部状态对比 (Viterbi) ---")
-print("真实状态 -> 观测状态 -> Viterbi推断状态 (转置显示，每列为一个时间步)")
-for actor_id in actors:
-    print(f"\n演员 {actor_id}:")
-    comparison_face_viterbi = np.vstack([
-        true_states['face_states'][:, actor_id],  # 真实状态
-        X_2[:, actor_id],                         # 观测状态
-        face_states_viterbi[:, actor_id]          # Viterbi推断状态
-    ])
-    print("真实:", comparison_face_viterbi[0, :])
-    print("观测:", comparison_face_viterbi[1, :])
-    print("Viterbi:", comparison_face_viterbi[2, :])
+# # 面部状态对比 (Viterbi)
+# print("\n--- 面部状态对比 (Viterbi) ---")
+# print("真实状态 -> 观测状态 -> Viterbi推断状态 (转置显示，每列为一个时间步)")
+# for actor_id in actors:
+#     print(f"\n演员 {actor_id}:")
+#     comparison_face_viterbi = np.vstack([
+#         true_states['face_states'][:, actor_id],  # 真实状态
+#         X_2[:, actor_id],                         # 观测状态
+#         face_states_viterbi[:, actor_id]          # Viterbi推断状态
+#     ])
+#     print("真实:", comparison_face_viterbi[0, :])
+#     print("观测:", comparison_face_viterbi[1, :])
+#     print("Viterbi:", comparison_face_viterbi[2, :])
 
-# 说话人状态对比 (Viterbi)
-print("\n--- 说话人状态对比 (Viterbi) ---")
-print("真实状态 -> 观测状态 -> Viterbi推断状态")
-comparison_speaker_viterbi = np.vstack([
-    true_states['speaker_states'],     # 真实状态
-    np.argmax(X_1, axis=1),           # 观测状态 (从one-hot转回标签)
-    speaker_states_viterbi            # Viterbi推断状态
-])
-print("真实:", comparison_speaker_viterbi[0, :])
-print("观测:", comparison_speaker_viterbi[1, :])
-print("Viterbi:", comparison_speaker_viterbi[2, :])
+# # 说话人状态对比 (Viterbi)
+# print("\n--- 说话人状态对比 (Viterbi) ---")
+# print("真实状态 -> 观测状态 -> Viterbi推断状态")
+# comparison_speaker_viterbi = np.vstack([
+#     true_states['speaker_states'],     # 真实状态
+#     np.argmax(X_1, axis=1),           # 观测状态 (从one-hot转回标签)
+#     speaker_states_viterbi            # Viterbi推断状态
+# ])
+# print("真实:", comparison_speaker_viterbi[0, :])
+# print("观测:", comparison_speaker_viterbi[1, :])
+# print("Viterbi:", comparison_speaker_viterbi[2, :])
 
-# 计算准确率
-print("\n=== 准确率统计 ===")
-## 面部状态准确率
-face_acc_viterbi = np.mean(true_states['face_states'] == face_states_viterbi)
-face_acc_observed = np.mean(true_states['face_states'] == X_2)
-## 说话人状态准确率
-speaker_acc_viterbi = np.mean(true_states['speaker_states'] == speaker_states_viterbi)
-speaker_acc_observed = np.mean(true_states['speaker_states'] == np.argmax(X_1, axis=1))
+# # 计算准确率
+# print("\n=== 准确率统计 ===")
+# ## 面部状态准确率
+# face_acc_viterbi = np.mean(true_states['face_states'] == face_states_viterbi)
+# face_acc_observed = np.mean(true_states['face_states'] == X_2)
+# ## 说话人状态准确率
+# speaker_acc_viterbi = np.mean(true_states['speaker_states'] == speaker_states_viterbi)
+# speaker_acc_observed = np.mean(true_states['speaker_states'] == np.argmax(X_1, axis=1))
 
-print("\n=== 准确率分析 ===")
-print(f"面部状态准确率:")
-print(f"  观测准确率: {face_acc_observed:.3f}")
-print(f"  Viterbi准确率: {face_acc_viterbi:.3f}")
+# print("\n=== 准确率分析 ===")
+# print(f"面部状态准确率:")
+# print(f"  观测准确率: {face_acc_observed:.3f}")
+# print(f"  Viterbi准确率: {face_acc_viterbi:.3f}")
 
-print(f"说话人状态准确率:")
-print(f"  观测准确率: {speaker_acc_observed:.3f}")
-print(f"  Viterbi准确率: {speaker_acc_viterbi:.3f}")
+# print(f"说话人状态准确率:")
+# print(f"  观测准确率: {speaker_acc_observed:.3f}")
+# print(f"  Viterbi准确率: {speaker_acc_viterbi:.3f}")
