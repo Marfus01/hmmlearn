@@ -663,7 +663,8 @@ class NestedHMM(_AbstractHMM):
         self._check_and_set_n_features(X_1, X_2)
         lengths = self._validate_lengths(X_1, lengths)
         n_samples = len(X_1)
-        
+        face_configs_arr = np.array(self.face_configs)  # shape (n_face_states, n_actors)
+
         # 初始化输出
         face_posteriors = np.zeros((n_samples, self.n_actors))
         speaker_posteriors = np.zeros((n_samples, self.n_actors))
@@ -692,16 +693,12 @@ class NestedHMM(_AbstractHMM):
                 
                 ### 计算面部状态的边际后验概率 P(F_{t, \\rho} =1 | 当前集全部观测)
                 for actor in range(self.n_actors):
-                    face_prob = 0.0
-                    for f_idx, face_config in enumerate(self.face_configs):
-                        if face_config[actor] == 1:  # 演员 $\rho$ 面部出现
-                            face_prob += gamma[f_idx].sum()  # 对所有说话人s求和
-                    face_posteriors[start_idx + t, actor] = face_prob
+                    for face_state in [0, 1]:
+                        mask = (face_configs_arr[:, actor] == face_state)
+                        face_posteriors[start_idx + t, actor] += gamma.sum(axis=1)[mask].sum()  # 先对说话人求和，再对符合要求的面部配置求和
                 
                 ### 计算说话人状态的边际后验概率 P(S_t=s | 当前集全部观测)
-                for speaker in range(self.n_actors):
-                    speaker_prob = gamma[:, speaker].sum()  # 对所有面部配置求和
-                    speaker_posteriors[start_idx + t, speaker] = speaker_prob
+                speaker_posteriors[start_idx + t, :] = gamma.sum(axis=0)
             
             start_idx = end_idx
         
