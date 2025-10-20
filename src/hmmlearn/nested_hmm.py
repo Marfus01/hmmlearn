@@ -345,7 +345,6 @@ class NestedHMM(_AbstractHMM):
                     log_face_trans = self._log_trans_face[f_idx, :]  # shape (n_face_configs,), each element corresponds to a next_face_config
                     log_speaker_trans = self._log_trans_speaker[speaker, :, :]  # shape (n_actors, n_face_configs)
                     log_speaker_trans = log_speaker_trans.T  # shape (n_face_configs, n_actors), each element corresponds to next_face_config and next_speaker
-                    # NOTE: 有误，应使用next_face_config，next_speaker
                     log_face_emission = list(map(lambda next_f: self._compute_face_emmission_prob(X_2[t+1], self.face_configs[next_f]), range(self.n_face_states)))
                     log_face_emission = np.array(log_face_emission)  # shape (n_face_configs,), each element corresponds to a next_face_config
                     log_speaker_emission = np.log(self.B_S_[:, np.argmax(X_1[t+1])])  # shape (n_actors,), each element corresponds to a next_speaker
