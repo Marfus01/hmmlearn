@@ -450,68 +450,59 @@ class NestedHMM(_AbstractHMM):
         """
         n_samples = len(X_1)
         stats_updated = stats.copy()
+        face_configs_arr = np.array(self.face_configs)  # shape (n_face_states, n_actors)
         
         # 计算后验概率
         for t in range(n_samples):
             # 单时刻后验概率 gamma[t, f, s] = P(F_t=f, S_t=s | 全部观测)
             gamma = fwd_lattice[t] + bwd_lattice[t] - seq_loglik
-            gamma = np.exp(gamma)
+            gamma = np.exp(gamma)   # shape (n_face_states, n_actors)
+            gamma_faces = gamma.sum(axis=1)  # shape: (n_face_states,)，提前对speaker求和，方便后续计算面部统计量
             
             # 累积初始统计量
             if t == 0:
-                for f_idx, face_config in enumerate(self.face_configs):  # 人脸期望计算式中的 $f$，说话人期望式中的 $f$
-                    for speaker in range(self.n_actors):  # 人脸期望计算式中的 $\varrho'$，说话人期望式中的 $\varrho$
-                        weight = gamma[f_idx, speaker]
-                        # NOTE: 计算效率待优化，可以仅对 face_config 中为 1 的位置做 for 循环
-                        # 计算人脸初始充分统计量 $\bbE\left[\bbN(F_{\cdot,1,\varrho}=1\vert \btheta^{(s)})\right]$ 中属于第i个片段的部分
-                        for actor in range(self.n_actors):  # 人脸期望式中的 $\varrho$
-                            if face_config[actor] == 1:
-                                stats_updated['face_initial_counts'][actor] += weight
-                        
-                        # 计算说话人初始充分统计量 $\bbE\left[\bbN(F_{\cdot,1,\cdot}=f,S_{\cdot,1}=\varrho\vert \btheta^{(s)})\right] $
-                        stats_updated['speaker_initial_counts'][f_idx, speaker] += weight
+                # 计算人脸初始充分统计量 $\bbE\left[\bbN(F_{\cdot,1,\varrho}=1\vert \btheta^{(s)})\right]$ 中属于第i个片段的部分
+                ## 先对人脸期望计算式中的 $\varrho'$求和，再对人脸期望计算式中的 $f$ 求和
+                stats_updated['face_initial_counts'] += (gamma_faces[:, None] * face_configs_arr).sum(axis=0)
+                # 计算说话人初始充分统计量 $\bbE\left[\bbN(F_{\cdot,1,\cdot}=f,S_{\cdot,1}=\varrho\vert \btheta^{(s)})\right] $
+                stats_updated['speaker_initial_counts'] += gamma
             
             # 累积转移统计量
             if t > 0:
-                # 计算转移后验概率 xi[t-1, f_prev, s_prev, f_curr, s_curr]
-                for prev_f_idx, prev_face_config in enumerate(self.face_configs):  # 人脸期望计算式中的 $f$，说话人期望计算式中的 $f'$
-                    for prev_speaker in range(self.n_actors):  # 人脸期望计算式中的 $\varrho'$，说话人期望式中的 $\varrho$
-                        for f_idx, face_config in enumerate(self.face_configs):  # 人脸期望计算式中的 $f'$，说话人期望式中的 $f$
-                            for speaker in range(self.n_actors):  # 人脸期望计算式中的 $\varrho^\ast$，说话人期望式中的 $\varrho'$
-                                
-                                log_xi = (fwd_lattice[t-1, prev_f_idx, prev_speaker] +
-                                         self._compute_face_transition_prob(prev_face_config, face_config) +
-                                         self._compute_speaker_transition_prob(prev_speaker, speaker, face_config) +
-                                         self._compute_emission_prob(X_1[t], X_2[t], face_config, speaker) +
-                                         bwd_lattice[t, f_idx, speaker] - seq_loglik)
-                                
-                                xi = np.exp(log_xi) # 求和式中的每一项
-                                
-                                # 计算面部转移统计量 $\bbE\left[\bbN(F_{\cdot,\cdot-1,\varrho}=\delta,F_{\cdot,\cdot,\varrho}=\delta' \vert \btheta^{(s)})\right]$
-                                for actor in range(self.n_actors):  #  人脸期望式中的 $\varrho$
-                                    prev_state = prev_face_config[actor]  # 人脸期望式中的 $\delta$
-                                    curr_state = face_config[actor] # 人脸期望式中的 $\delta'$
-                                    stats_updated['face_transition_counts'][actor, prev_state, curr_state] += xi
-                                
-                                # 存储用于说话人转移概率优化的信息
-                                # 与说话人初始概率类似，需要同时保存 (f, \varrho, \varrho')的信息和计算式中三层求和式内项的取值
-                                stats_updated['speaker_transition_counts'][f_idx, prev_speaker, speaker] += xi
-            
+                ## 计算对数转移后验概率 xi[t-1, f_prev, s_prev, f_curr, s_curr]
+                log_face_emission = list(map(lambda crt_f: self._compute_face_emmission_prob(X_2[t], self.face_configs[crt_f]), range(self.n_face_states)))
+                log_face_emission = np.array(log_face_emission)  # shape (n_face_configs,), each element corresponds to a current face_config
+                log_speaker_emission = np.log(self.B_S_[:, np.argmax(X_1[t])])  # shape (n_actors,), each element corresponds to a current speaker 
+
+                log_xi_arr = (fwd_lattice[t-1, :, :, None, None] + self._log_trans_face[:, None, :, None] +
+                              np.transpose(self._log_trans_speaker, (0, 2, 1))[None, :, :, :] +
+                              log_face_emission[None, None, :, None] + log_speaker_emission[None, None, None, :] +
+                              bwd_lattice[t, None, None, :, :] - seq_loglik) 
+                xi_arr = np.exp(log_xi_arr) # 求和式中的每一项
+
+                ## 计算面部转移统计量 $\bbE\left[\bbN(F_{\cdot,\cdot-1,\varrho}=\delta,F_{\cdot,\cdot,\varrho}=\delta' \vert \btheta^{(s)})\right]$
+                face_transition_weights = xi_arr.sum(axis=(1, 3))  # shape: (n_face_states, n_face_states)
+                for actor in range(self.n_actors):  #  人脸期望式中的 $\varrho$
+                    prev_states = face_configs_arr[:, actor]  # shape: (n_face_states,), 人脸期望式中的 $\delta$
+                    curr_states = face_configs_arr[:, actor]  # shape: (n_face_states,), 人脸期望式中的 $\delta'$
+                    for prev_state in [0, 1]:
+                        for curr_state in [0, 1]:
+                            mask = (prev_states[:, None] == prev_state) & (curr_states[None, :] == curr_state)
+                            stats_updated['face_transition_counts'][actor, prev_state, curr_state] += face_transition_weights[mask].sum()
+                ## 存储用于说话人转移概率优化的信息
+                stats_updated['speaker_transition_counts'] += np.transpose(xi_arr.sum(axis=0), (1, 0, 2))  # sum over prev_f_idx
+           
             # 累积发射统计量
+            ## 说话人发射统计量
             speaker_obs = np.argmax(X_1[t]) # 说话人期望计算式中的 $\varrho'$
-            for f_idx, face_config in enumerate(self.face_configs):  # 期望计算式中的 $f$
-                for speaker in range(self.n_actors):
-                    weight = gamma[f_idx, speaker]  # 人脸期望计算式中的 $\varrho$，说话人期望计算式中的 $\varrho'$
+            stats_updated['speaker_emission_counts'][:, speaker_obs] += gamma.sum(axis=0)
 
-                    # 面部发射统计量
-                    for actor in range(self.n_actors):  # 人脸期望式中的 $\varrho$
-                        true_face = face_config[actor]  # 人脸期望式中的 $\delta$
-                        obs_face = X_2[t, actor]  # 人脸期望式中的 $\delta'$
-                        stats_updated['face_emission_counts'][actor, true_face, obs_face] += weight
+            ## 面部发射统计量
+            for actor in range(self.n_actors):  # 人脸期望式中的 $\varrho$
+                for face_state in [0, 1]:  # 人脸期望式中的 $\delta$
+                    mask = (face_configs_arr[:, actor] == face_state)
+                    stats_updated['face_emission_counts'][actor, face_state, X_2[t, actor]] += gamma_faces[mask].sum()
 
-                    # 说话人发射统计量
-                    stats_updated['speaker_emission_counts'][speaker, speaker_obs] += weight
-        
         return stats_updated
 
     def _do_mstep(self, stats, lengths):
