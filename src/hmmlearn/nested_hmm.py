@@ -394,8 +394,8 @@ class NestedHMM(_AbstractHMM):
         """
         计算在已知上一时刻说话人时，转移到所有说话人的概率 $\bbP(S_{i,t+1}=\cdot \vert S_{i,t}=\varrho',F_{i,t+1,\cdot}=f)$ 的对数
         """
-        logits = np.array(list(map(lambda s: self.A_S_[prev_speaker, s] + self.gamma2_ * face_config[s], range(self.n_actors))))
-        log_probs = np.asarray(logits - logsumexp(logits)).flatten()
+        logits = np.array(list(map(lambda s: self.A_S_[prev_speaker, s] + self.gamma2_ * face_config[s], range(self.n_actors)))).flatten()
+        log_probs = logits - logsumexp(logits)
         return log_probs
 
     def _compute_speaker_transition_prob(self, prev_speaker, curr_speaker, face_config):
