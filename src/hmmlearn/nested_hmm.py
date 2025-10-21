@@ -115,7 +115,6 @@ class NestedHMM(_AbstractHMM):
         return face_configs
 
     def _init_params(self):
-        self.log_likelihood_ = -np.inf
         """初始化嵌套HMM的参数"""
         random_state = check_random_state(self.random_state)
         
@@ -256,7 +255,6 @@ class NestedHMM(_AbstractHMM):
             start_idx = end_idx
             
         stats['log_likelihood'] = log_likelihood
-        self.log_likelihood_ = log_likelihood
         
         print(f"前向算法总时间: {forward_time:.4f}秒")
         print(f"后向算法总时间: {backward_time:.4f}秒")
@@ -433,12 +431,12 @@ class NestedHMM(_AbstractHMM):
         初始化充分统计量，也即 M 步用到的期望值
         """
         return {
-            'face_initial_counts': np.zeros(self.n_actors),
-            'face_transition_counts': np.zeros((self.n_actors, 2, 2)),
-            'speaker_initial_counts': np.zeros((self.n_face_states, self.n_actors)),
-            'speaker_transition_counts': np.zeros((self.n_face_states, self.n_actors, self.n_actors)),
-            'face_emission_counts': np.zeros((self.n_actors, 2, 2)),
-            'speaker_emission_counts': np.zeros((self.n_actors, self.n_actors))
+            'face_initial_counts': np.zeros(self.n_actors), # [actor], expected count of face state 1 for that actor at initial time
+            'face_transition_counts': np.zeros((self.n_actors, 2, 2)),  # [actor, f_prev_state, f_curr_state]
+            'speaker_initial_counts': np.zeros((self.n_face_states, self.n_actors)),    # [f_init, s_init]
+            'speaker_transition_counts': np.zeros((self.n_face_states, self.n_actors, self.n_actors)),  # [f_curr, s_prev, s_curr]
+            'face_emission_counts': np.zeros((self.n_actors, 2, 2)),    # [actor, face_state, observed_state]
+            'speaker_emission_counts': np.zeros((self.n_actors, self.n_actors))  # [speaker_state, observed_speaker]
         }
 
     def _accumulate_sufficient_statistics(self, stats, X_1, X_2, fwd_lattice, bwd_lattice, seq_loglik):
@@ -486,7 +484,7 @@ class NestedHMM(_AbstractHMM):
                         for curr_state in [0, 1]:
                             mask = (prev_states[:, None] == prev_state) & (curr_states[None, :] == curr_state)
                             stats_updated['face_transition_counts'][actor, prev_state, curr_state] += face_transition_weights[mask].sum()
-                ## 存储用于说话人转移概率优化的信息
+                ## 存储用于说话人转移概率优化的信息，[f_curr, s_prev, s_curr]
                 stats_updated['speaker_transition_counts'] += np.transpose(xi_arr.sum(axis=0), (1, 0, 2))  # sum over prev_f_idx
            
             # 累积发射统计量
@@ -567,12 +565,11 @@ class NestedHMM(_AbstractHMM):
             loss = 0.0
 
             for f_idx, face_config in enumerate(self.face_configs):  # 说话人期望式中的 $f$
-                for speaker in range(self.n_actors):  # 说话人期望式中的 $\varrho$
-                    weight = stats['speaker_initial_counts'][f_idx, speaker]
-                    if weight > 0:
-                        logits = np.array([beta[s] + gamma1 * face_config[s] for s in range(self.n_actors)])  # s 对应 M 步迭代计算式中的 $\varrho'$
-                        log_probs = logits - logsumexp(logits)  # log-softmax
-                        loss -= weight * log_probs[speaker]
+                weights = stats['speaker_initial_counts'][f_idx]  # shape: (n_actors,), 对应说话人期望式中的 $\varrho$
+                mask = (weights > 0)
+                logits = np.array([beta[s] + gamma1 * face_config[s] for s in range(self.n_actors)])  # s 对应 M 步迭代计算式中的 $\varrho'$
+                log_probs = logits - logsumexp(logits)  # log-softmax
+                loss -= np.sum(weights[mask] * log_probs[mask])
             
             return loss
         
@@ -600,13 +597,12 @@ class NestedHMM(_AbstractHMM):
 
             for prev_speaker in range(self.n_actors):  # 说话人期望式中的 $\varrho$
                 for f_idx, face_config in enumerate(self.face_configs):  # 说话人期望计算式中的 $f$
-                    for speaker in range(self.n_actors):  # 说话人期望式中的 $\varrho'$
-                        weight = stats['speaker_transition_counts'][f_idx, prev_speaker, speaker]
-                        if weight > 0:
-                            logits = np.array([A_S_flat[prev_speaker, s] + gamma2 * face_config[s] 
-                                             for s in range(self.n_actors)])  # s 对应 M 步迭代计算式中的 $\varrho^\ast$
-                            log_probs = logits - logsumexp(logits)
-                            loss -= weight * log_probs[speaker]
+                    weights = stats['speaker_transition_counts'][f_idx, prev_speaker]  # shape: (n_actors,), 对应说话人期望式中的 $\varrho'$
+                    mask = (weights > 0)
+                    logits = np.array([A_S_flat[prev_speaker, s] + gamma2 * face_config[s] 
+                                        for s in range(self.n_actors)])  # s 对应 M 步迭代计算式中的 $\varrho^\ast$
+                    log_probs = logits - logsumexp(logits)
+                    loss -= np.sum(weights[mask] * log_probs[mask])
             
             return loss
         
@@ -627,10 +623,7 @@ class NestedHMM(_AbstractHMM):
         X_1 = np.array(X_1)
         X_2 = np.array(X_2)
 
-        # if self.log_likelihood_ == -np.inf:
-        #     raise ValueError("Model must be fitted before scoring.")
-        # else:
-        #     return self.log_likelihood_            
+        # EM算法总以M步结束，为了确保计算最新的对数似然，这里重新计算一次E步        
         return self._do_estep(X_1, X_2, lengths)['log_likelihood']
 
 
