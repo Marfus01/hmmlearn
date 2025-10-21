@@ -70,25 +70,25 @@ class NestedHMM(_AbstractHMM):
         # 创建监控器
         self.monitor_ = ConvergenceMonitor(tol, n_iter, verbose)
 
-    def _check_and_set_n_features(self, X_1, X_2):
+    def _check_and_set_n_features(self, S_hat_onehot, F_hat):
         """
         验证嵌套HMM数据格式，要求
-        - X_1: 说话人观测，one-hot编码，形状 (n_samples, n_actors)
-        - X_2: 面部出现，二进制数据，形状 (n_samples, n_actors)
+        - S_hat_onehot: 说话人观测，one-hot编码，形状 (n_samples, n_actors)
+        - F_hat: 面部出现，二进制数据，形状 (n_samples, n_actors)
         """
-        if X_1.shape != X_2.shape:
-            raise ValueError(f"X_1 and X_2 must have the same shape, got {X_1.shape} and {X_2.shape}")
+        if S_hat_onehot.shape != F_hat.shape:
+            raise ValueError(f"S_hat_onehot and F_hat must have the same shape, got {S_hat_onehot.shape} and {F_hat.shape}")
         
-        if X_1.shape[1] != self.n_actors:
-            raise ValueError(f"Expected {self.n_actors} actors, got {X_1.shape}")
+        if S_hat_onehot.shape[1] != self.n_actors:
+            raise ValueError(f"Expected {self.n_actors} actors, got {S_hat_onehot.shape}")
             
-        # 检查X_1是one-hot编码
-        if not np.allclose(X_1.sum(axis=1), 1):
-            raise ValueError("X_1 must be one-hot encoded (each row sums to 1)")
+        # 检查 S_hat_onehot 是one-hot编码
+        if not np.allclose(S_hat_onehot.sum(axis=1), 1):
+            raise ValueError("S_hat_onehot must be one-hot encoded (each row sums to 1)")
         
-        # 检查X_2是二进制数据
-        if not np.all(np.isin(X_2, [0, 1])):
-            raise ValueError("X_2 must contain only binary values (0 or 1)")
+        # 检查F_hat是二进制数据
+        if not np.all(np.isin(F_hat, [0, 1])):
+            raise ValueError("F_hat must contain only binary values (0 or 1)")
 
     def _validate_lengths(self, X, lengths):
         """
@@ -177,13 +177,13 @@ class NestedHMM(_AbstractHMM):
                 self._log_trans_speaker[prev_s, :, i] = self._compute_speaker_transition_probs(
                     prev_s, config)
 
-    def fit(self, X_1, X_2, lengths=None):
+    def fit(self, S_hat_onehot, F_hat, lengths=None):
         """训练嵌套HMM模型"""
-        X_1 = np.array(X_1)
-        X_2 = np.array(X_2)
+        S_hat_onehot = np.array(S_hat_onehot)
+        F_hat = np.array(F_hat)
         
-        self._check_and_set_n_features(X_1, X_2)
-        lengths = self._validate_lengths(X_1, lengths)
+        self._check_and_set_n_features(S_hat_onehot, F_hat)
+        lengths = self._validate_lengths(S_hat_onehot, lengths)
         
         # 初始化参数
         self._init_params()
@@ -194,7 +194,7 @@ class NestedHMM(_AbstractHMM):
         for n_iter in range(self.n_iter):
             # E步：计算前向后向概率和期望统计量
             start_time = time.time()
-            stats = self._do_estep(X_1, X_2, lengths)
+            stats = self._do_estep(S_hat_onehot, F_hat, lengths)
             estep_time = time.time() - start_time
 
             # 检查收敛
@@ -213,7 +213,7 @@ class NestedHMM(_AbstractHMM):
 
         return self
 
-    def _do_estep(self, X_1, X_2, lengths):
+    def _do_estep(self, S_hat_onehot, F_hat, lengths):
         """E步：使用前向-后向算法计算期望统计量，同时获取数据总体的log-likelihood"""
         
         stats = self._initialize_sufficient_statistics()
@@ -228,8 +228,8 @@ class NestedHMM(_AbstractHMM):
             end_idx = start_idx + length
             
             # 获取当前序列段
-            seq_X1 = X_1[start_idx:end_idx]
-            seq_X2 = X_2[start_idx:end_idx]
+            seq_X1 = S_hat_onehot[start_idx:end_idx]
+            seq_X2 = F_hat[start_idx:end_idx]
             
             # 前向算法
             start_time = time.time()
@@ -262,14 +262,14 @@ class NestedHMM(_AbstractHMM):
         
         return stats
 
-    def _do_forward_pass(self, X_1, X_2):
+    def _do_forward_pass(self, S_hat_onehot, F_hat):
         """
         前向算法计算前向概率的对数
-            - X_1: 说话人观测，形状 (n_samples, n_actors)，one-hot编码
-            - X_2: 面部出现，形状 (n_samples, n_actors)，二进制数据
+            - S_hat_onehot: 说话人观测，形状 (n_samples, n_actors)，one-hot编码
+            - F_hat: 面部出现，形状 (n_samples, n_actors)，二进制数据
             - return: fwd_lattice, 形状 (n_samples, n_face_states, n_actors), (t, f_idx, s) 表示时刻t面部配置为f_idx，说话人为s的对数概率 $ \log (\bbU_{i,t}(f,\varrho))$
         """
-        n_samples = len(X_1)
+        n_samples = len(S_hat_onehot)
         n_face_configs = len(self.face_configs)
         
         # fwd_lattice[t, f, s] = log P(观测到t时刻, 面部配置f, 说话人s)
@@ -280,7 +280,7 @@ class NestedHMM(_AbstractHMM):
             log_face_prob = self._compute_face_initial_prob(face_config)            
             for speaker in range(self.n_actors):    # 遍历所有可能的\varrho
                 log_speaker_prob = self._compute_speaker_initial_prob(speaker, face_config)
-                log_emission_prob = self._compute_emission_prob(X_1[0], X_2[0], face_config, speaker)
+                log_emission_prob = self._compute_emission_prob(S_hat_onehot[0], F_hat[0], face_config, speaker)
                 
                 fwd_lattice[0, f_idx, speaker] = log_face_prob + log_speaker_prob + log_emission_prob
         
@@ -296,9 +296,9 @@ class NestedHMM(_AbstractHMM):
                 print(f"t={t}: fwd_lattice[t-1] contains {num_inf} -np.inf out of {total_elements} elements")
 
             ## 计算当前时刻所有可能隐藏状态对应的观测概率
-            log_face_emission = list(map(lambda crt_f: self._compute_face_emission_prob(X_2[t], self.face_configs[crt_f]), range(self.n_face_states)))
+            log_face_emission = list(map(lambda crt_f: self._compute_face_emission_prob(F_hat[t], self.face_configs[crt_f]), range(self.n_face_states)))
             log_face_emission = np.array(log_face_emission)  # shape (n_face_configs,), each element corresponds to a current face_config
-            log_speaker_emission = np.log(self.B_S_[:, np.argmax(X_1[t])])  # shape (n_actors,), each element corresponds to a current speaker 
+            log_speaker_emission = np.log(self.B_S_[:, np.argmax(S_hat_onehot[t])])  # shape (n_actors,), each element corresponds to a current speaker 
 
             ## 计算当前时刻所有可能的 (f, \varrho)对应的概率log_probs_arr (f_prev, s_prev, f_curr, s_curr)
             log_probs_arr = (prev_fwd_lattice[:, :, None, None] + 
@@ -309,14 +309,14 @@ class NestedHMM(_AbstractHMM):
         
         return fwd_lattice
 
-    def _do_backward_pass(self, X_1, X_2):
+    def _do_backward_pass(self, S_hat_onehot, F_hat):
         """
         后向算法计算后向概率的对数
-            - X_1: 说话人观测，形状 (n_samples, n_actors)，one-hot编码
-            - X_2: 面部出现，形状 (n_samples, n_actors)，二进制数据
+            - S_hat_onehot: 说话人观测，形状 (n_samples, n_actors)，one-hot编码
+            - F_hat: 面部出现，形状 (n_samples, n_actors)，二进制数据
             - return: bwd_lattice, 形状 (n_samples, n_face_states, n_actors), (t, f_idx, s) 表示时刻t面部配置为f_idx，说话人为s的对数概率 $ \log (\bbV_{i,t}(f,\varrho))$
         """
-        n_samples = len(X_1)
+        n_samples = len(S_hat_onehot)
         n_face_configs = len(self.face_configs)
         
         # bwd_lattice[t, f, s] = log P(t+1时刻之后的观测 | t时刻面部配置f, 说话人s)
@@ -337,9 +337,9 @@ class NestedHMM(_AbstractHMM):
                 print(f"t={t}: bwd_lattice[t+1] contains {num_inf} -np.inf out of {total_elements} elements")
 
             ## 计算当前时刻所有可能隐藏状态对应的观测概率
-            log_face_emission = list(map(lambda next_f: self._compute_face_emission_prob(X_2[t+1], self.face_configs[next_f]), range(self.n_face_states)))
+            log_face_emission = list(map(lambda next_f: self._compute_face_emission_prob(F_hat[t+1], self.face_configs[next_f]), range(self.n_face_states)))
             log_face_emission = np.array(log_face_emission)  # shape (n_face_configs,), each element corresponds to a next_face_config
-            log_speaker_emission = np.log(self.B_S_[:, np.argmax(X_1[t+1])])  # shape (n_actors,), each element corresponds to a next_speaker
+            log_speaker_emission = np.log(self.B_S_[:, np.argmax(S_hat_onehot[t+1])])  # shape (n_actors,), each element corresponds to a next_speaker
 
             ## 计算当前时刻所有可能的 (f, \varrho)对应的概率log_probs_arr (f_curr, s_curr, f_next, s_next)
             log_probs_arr = (next_bwd_lattice[None, None, :, :] + 
@@ -439,11 +439,11 @@ class NestedHMM(_AbstractHMM):
             'speaker_emission_counts': np.zeros((self.n_actors, self.n_actors))  # [speaker_state, observed_speaker]
         }
 
-    def _accumulate_sufficient_statistics(self, stats, X_1, X_2, fwd_lattice, bwd_lattice, seq_loglik):
+    def _accumulate_sufficient_statistics(self, stats, S_hat_onehot, F_hat, fwd_lattice, bwd_lattice, seq_loglik):
         """
         更新累积充分统计量 stats，以便于后续执行参数更新
         """
-        n_samples = len(X_1)
+        n_samples = len(S_hat_onehot)
         stats_updated = stats.copy()
         face_configs_arr = np.array(self.face_configs)  # shape (n_face_states, n_actors)
         
@@ -465,9 +465,9 @@ class NestedHMM(_AbstractHMM):
             # 累积转移统计量
             if t > 0:
                 ## 计算对数转移后验概率 xi[t-1, f_prev, s_prev, f_curr, s_curr]
-                log_face_emission = list(map(lambda crt_f: self._compute_face_emission_prob(X_2[t], self.face_configs[crt_f]), range(self.n_face_states)))
+                log_face_emission = list(map(lambda crt_f: self._compute_face_emission_prob(F_hat[t], self.face_configs[crt_f]), range(self.n_face_states)))
                 log_face_emission = np.array(log_face_emission)  # shape (n_face_configs,), each element corresponds to a current face_config
-                log_speaker_emission = np.log(self.B_S_[:, np.argmax(X_1[t])])  # shape (n_actors,), each element corresponds to a current speaker 
+                log_speaker_emission = np.log(self.B_S_[:, np.argmax(S_hat_onehot[t])])  # shape (n_actors,), each element corresponds to a current speaker 
 
                 log_xi_arr = (fwd_lattice[t-1, :, :, None, None] + self._log_trans_face[:, None, :, None] +
                               np.transpose(self._log_trans_speaker, (0, 2, 1))[None, :, :, :] +
@@ -489,14 +489,14 @@ class NestedHMM(_AbstractHMM):
            
             # 累积发射统计量
             ## 说话人发射统计量
-            speaker_obs = np.argmax(X_1[t]) # 说话人期望计算式中的 $\varrho'$
+            speaker_obs = np.argmax(S_hat_onehot[t]) # 说话人期望计算式中的 $\varrho'$
             stats_updated['speaker_emission_counts'][:, speaker_obs] += gamma.sum(axis=0)
 
             ## 面部发射统计量
             for actor in range(self.n_actors):  # 人脸期望式中的 $\varrho$
                 for face_state in [0, 1]:  # 人脸期望式中的 $\delta$
                     mask = (face_configs_arr[:, actor] == face_state)
-                    stats_updated['face_emission_counts'][actor, face_state, X_2[t, actor]] += gamma_faces[mask].sum()
+                    stats_updated['face_emission_counts'][actor, face_state, F_hat[t, actor]] += gamma_faces[mask].sum()
 
         return stats_updated
 
@@ -618,24 +618,24 @@ class NestedHMM(_AbstractHMM):
         else:
             print("Warning: Speaker transition parameters optimization did not converge.")
 
-    def score(self, X_1, X_2, lengths=None):
+    def score(self, S_hat_onehot, F_hat, lengths=None):
         """计算观测序列的对数似然"""
-        X_1 = np.array(X_1)
-        X_2 = np.array(X_2)
+        S_hat_onehot = np.array(S_hat_onehot)
+        F_hat = np.array(F_hat)
 
         # EM算法总以M步结束，为了确保计算最新的对数似然，这里重新计算一次E步        
-        return self._do_estep(X_1, X_2, lengths)['log_likelihood']
+        return self._do_estep(S_hat_onehot, F_hat, lengths)['log_likelihood']
 
 
-    def predict_proba(self, X_1, X_2, lengths=None):
+    def predict_proba(self, S_hat_onehot, F_hat, lengths=None):
         """
         计算给定观测序列时隐藏状态的联合后验概率 $\\bbP(F_{i,t,\cdot}=f,S_{i,t}=\\varrho \\vert \cI_i^{obs}, \\btheta^{(s)})$，以及求和得到的边际后验 $\pi_{i,t,\varrho} = \\bbP(F_{i,t,\\rho}=1 \\vert \cI_i^{obs}, \\btheta^{(s)})$ , $\lambda_{i,t,\\varrho} = \\bbP(S_{i,t}=\\varrho \\vert \cI_i^{obs}, \\btheta^{(s)})$
         
         Parameters
         ----------
-        X_1 : array-like, shape (n_samples, n_actors)
+        S_hat_onehot : array-like, shape (n_samples, n_actors)
             说话人观测，one-hot编码
-        X_2 : array-like, shape (n_samples, n_actors)  
+        F_hat : array-like, shape (n_samples, n_actors)  
             面部出现观测，二进制数据
         lengths : array-like of integers, optional
             每个序列的长度
@@ -651,11 +651,11 @@ class NestedHMM(_AbstractHMM):
             - 'joint_states': array, shape (n_samples, n_face_states, n_actors)
               每个时刻联合状态 (face_config, speaker) 的后验概率 $ \\bbP(F_{i,t,\\cdot}=f,S_{i,t}=\\varrho \\vert \cI_i^{obs}, \\btheta^{(s)}) $
         """
-        X_1 = np.array(X_1)
-        X_2 = np.array(X_2)
-        self._check_and_set_n_features(X_1, X_2)
-        lengths = self._validate_lengths(X_1, lengths)
-        n_samples = len(X_1)
+        S_hat_onehot = np.array(S_hat_onehot)
+        F_hat = np.array(F_hat)
+        self._check_and_set_n_features(S_hat_onehot, F_hat)
+        lengths = self._validate_lengths(S_hat_onehot, lengths)
+        n_samples = len(S_hat_onehot)
         face_configs_arr = np.array(self.face_configs)  # shape (n_face_states, n_actors)
 
         # 初始化输出
@@ -669,8 +669,8 @@ class NestedHMM(_AbstractHMM):
             end_idx = start_idx + length
             
             ## 获取当前序列段
-            seq_X1 = X_1[start_idx:end_idx]
-            seq_X2 = X_2[start_idx:end_idx]
+            seq_X1 = S_hat_onehot[start_idx:end_idx]
+            seq_X2 = F_hat[start_idx:end_idx]
             
             ## 计算前向和后向概率，以及序列的对数似然
             fwd_lattice = self._do_forward_pass(seq_X1, seq_X2)
@@ -701,15 +701,15 @@ class NestedHMM(_AbstractHMM):
             'joint_states': joint_posteriors
         }
 
-    def predict(self, X_1, X_2, lengths=None):
+    def predict(self, S_hat_onehot, F_hat, lengths=None):
         """
         使用Viterbi算法，预测最可能的隐藏状态序列(面部状态和说话人状态)
         
         Parameters
         ----------
-        X_1 : array-like, shape (n_samples, n_actors)
+        S_hat_onehot : array-like, shape (n_samples, n_actors)
             说话人观测，one-hot编码
-        X_2 : array-like, shape (n_samples, n_actors)
+        F_hat : array-like, shape (n_samples, n_actors)
             面部出现观测，二进制数据
         lengths : array-like of integers, optional
             每个序列的长度，如果为None，则假设是单一序列
@@ -721,22 +721,22 @@ class NestedHMM(_AbstractHMM):
         speaker_states : array, shape (n_samples,)
             预测的说话人状态序列 (0到n_actors-1)
         """
-        X_1 = np.asarray(X_1)
-        X_2 = np.asarray(X_2)
-        self._check_and_set_n_features(X_1, X_2)
-        lengths = self._validate_lengths(X_1, lengths)
+        S_hat_onehot = np.asarray(S_hat_onehot)
+        F_hat = np.asarray(F_hat)
+        self._check_and_set_n_features(S_hat_onehot, F_hat)
+        lengths = self._validate_lengths(S_hat_onehot, lengths)
         
         # 初始化输出数组
-        face_states = np.zeros_like(X_2, dtype=int)
-        speaker_states = np.zeros(X_1.shape[0], dtype=int)
+        face_states = np.zeros_like(F_hat, dtype=int)
+        speaker_states = np.zeros(S_hat_onehot.shape[0], dtype=int)
         
         start_idx = 0
         for seq_len in lengths:
             end_idx = start_idx + seq_len
             
             # 提取当前序列
-            seq_X1 = X_1[start_idx:end_idx]
-            seq_X2 = X_2[start_idx:end_idx]
+            seq_X1 = S_hat_onehot[start_idx:end_idx]
+            seq_X2 = F_hat[start_idx:end_idx]
             
             # 使用维特比算法预测
             seq_face_states, seq_speaker_states = self._viterbi(seq_X1, seq_X2)
@@ -749,15 +749,15 @@ class NestedHMM(_AbstractHMM):
             
         return face_states, speaker_states
         
-    def _viterbi(self, X_1, X_2):
+    def _viterbi(self, S_hat_onehot, F_hat):
         """
         对单个序列使用维特比算法进行解码
         
         Parameters
         ----------
-        X_1 : array-like, shape (n_frames, n_actors)
+        S_hat_onehot : array-like, shape (n_frames, n_actors)
             说话人观测序列
-        X_2 : array-like, shape (n_frames, n_actors)
+        F_hat : array-like, shape (n_frames, n_actors)
             面部出现序列
             
         Returns
@@ -767,7 +767,7 @@ class NestedHMM(_AbstractHMM):
         speaker_states : array, shape (n_frames,)
             预测的说话人状态序列
         """
-        n_frames = X_1.shape[0]
+        n_frames = S_hat_onehot.shape[0]
         
         # 初始化维特比表格 $\delta_{t}(f,s)$ 与回溯路径 $\psi_{t}(f,s)$
         ## $\delta_{t}(f,s)$: 在时刻t，面部配置f，说话人s的最大概率的对数
@@ -781,15 +781,15 @@ class NestedHMM(_AbstractHMM):
             log_face_init_prob = self._compute_face_initial_prob(face_config)   # 对数初始面部隐藏状态概率
             for speaker in range(self.n_actors):
                 log_speaker_init_prob = self._compute_speaker_initial_prob(speaker, face_config)    # 对数初始说话人隐藏状态概率
-                log_obs_prob = self._compute_emission_prob(X_1[0], X_2[0], face_config, speaker)    # 对数观测概率 P(F_hat | F)*P(S_hat | S)
+                log_obs_prob = self._compute_emission_prob(S_hat_onehot[0], F_hat[0], face_config, speaker)    # 对数观测概率 P(F_hat | F)*P(S_hat | S)
                 viterbi[0, f_idx, speaker] = log_face_init_prob + log_speaker_init_prob + log_obs_prob  
         
         # 前向传播 t=1到n_frames-1
         for t in range(1, n_frames):
             ## 计算当前时刻每个隐藏状态对应的观测概率P(F_hat_t | F_t)*P(S_hat_t | S_t)
-            log_face_emission = list(map(lambda crt_f: self._compute_face_emission_prob(X_2[t], self.face_configs[crt_f]), range(self.n_face_states)))
+            log_face_emission = list(map(lambda crt_f: self._compute_face_emission_prob(F_hat[t], self.face_configs[crt_f]), range(self.n_face_states)))
             log_face_emission = np.array(log_face_emission)  # shape (n_face_configs,), each element corresponds to a current face_config                
-            log_speaker_emission = np.log(self.B_S_[:, np.argmax(X_1[t])])  # shape (n_actors,), each element corresponds to a current speaker  
+            log_speaker_emission = np.log(self.B_S_[:, np.argmax(S_hat_onehot[t])])  # shape (n_actors,), each element corresponds to a current speaker  
 
             # 计算每个当前状态对应的 $\delta_{t}(f,s)$
             for f_idx, face_config in enumerate(self.face_configs):

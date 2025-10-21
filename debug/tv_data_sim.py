@@ -71,13 +71,13 @@ def generate_multiple_sequences(params, sequence_lengths, actors):
     生成多个不同长度的序列，返回新的数据格式
     
     返回:
-    - X_1: 说话人标签 (n_total_samples, n_actors) one-hot编码
-    - X_2: 面部出现 (n_total_samples, n_actors) 
+    - S_hat_onehot: 说话人标签 (n_total_samples, n_actors) one-hot编码
+    - F_hat: 面部出现 (n_total_samples, n_actors) 
     - lengths: 序列长度列表
     """
     sequences = []
-    X_1_list = []
-    X_2_list = []
+    S_hat_onehot_list = []
+    F_hat_list = []
     F_true_list = []
     S_true_list = []
     
@@ -88,8 +88,8 @@ def generate_multiple_sequences(params, sequence_lengths, actors):
         S_hat_onehot = np.zeros((length, len(actors)))
         S_hat_onehot[np.arange(length), S_hat] = 1
         
-        X_1_list.append(S_hat_onehot)  # 说话人标签 (one-hot)
-        X_2_list.append(F_hat)         # 面部出现
+        S_hat_onehot_list.append(S_hat_onehot)  # 说话人标签 (one-hot)
+        F_hat_list.append(F_hat)         # 面部出现
         F_true_list.append(F)          # 真实面部状态
         S_true_list.append(S)          # 真实说话人状态
         
@@ -97,12 +97,12 @@ def generate_multiple_sequences(params, sequence_lengths, actors):
             'sequence_id': seq_id,
             'length': length,
             'F': F, 'S': S, 'F_hat': F_hat, 'S_hat': S_hat,
-            'X_1': S_hat_onehot, 'X_2': F_hat
+            'S_hat_onehot': S_hat_onehot, 'F_hat': F_hat
         })
     
     # 合并所有序列
-    X_1 = np.vstack(X_1_list)
-    X_2 = np.vstack(X_2_list)
+    S_hat_onehot = np.vstack(S_hat_onehot_list)
+    F_hat = np.vstack(F_hat_list)
     F_true = np.vstack(F_true_list)
     S_true = np.hstack(S_true_list)
     
@@ -111,7 +111,7 @@ def generate_multiple_sequences(params, sequence_lengths, actors):
         'speaker_states': S_true
     }
     
-    return X_1, X_2, sequence_lengths, sequences, true_states
+    return S_hat_onehot, F_hat, sequence_lengths, sequences, true_states
 
 # 设置随机种子
 np.random.seed(42)
@@ -161,7 +161,7 @@ params = {
 
 # 生成多个不同长度的序列
 sequence_lengths = [150, 200, 120, 250, 180]
-X_1, X_2, lengths, sequences, true_states = generate_multiple_sequences(params, sequence_lengths, actors)
+S_hat_onehot, F_hat, lengths, sequences, true_states = generate_multiple_sequences(params, sequence_lengths, actors)
 
 # # 打印结果
 # print("=== 嵌套马尔可夫模型数据生成结果 ===")
@@ -186,8 +186,8 @@ X_1, X_2, lengths, sequences, true_states = generate_multiple_sequences(params, 
 # print(f"面部影响参数 γ1: {params['gamma1']}, γ2: {params['gamma2']}")
 
 print("=== 数据格式验证 ===")
-print(f"X_1 shape: {X_1.shape} (说话人标签, one-hot)")
-print(f"X_2 shape: {X_2.shape} (面部出现)")
+print(f"S_hat_onehot shape: {S_hat_onehot.shape} (说话人标签, one-hot)")
+print(f"F_hat shape: {F_hat.shape} (面部出现)")
 print(f"lengths: {lengths}")
 
 # 创建和训练模型
@@ -198,7 +198,7 @@ start_time = time.time()
 print("训练开始时间:", time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(start_time)))
 
 model = NestedHMM(n_actors=3, n_iter=10, verbose=True, tol=1e-3)
-model.fit(X_1, X_2, lengths)
+model.fit(S_hat_onehot, F_hat, lengths)
 
 end_time = time.time()
 print("训练结束时间:", time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(end_time)))
@@ -242,14 +242,14 @@ print("训练耗时:", end_time - start_time, "秒")
 
 # 计算后验概率
 print("\n=== 计算后验概率 ===")
-pred_probs = model.predict_proba(X_1, X_2, lengths)
+pred_probs = model.predict_proba(S_hat_onehot, F_hat, lengths)
 print(pred_probs['joint_states'][-1])
 
 
 # viterbi 解码结果
 print("\n=== Viterbi 解码结果 ===")
 start_time = time.time()
-face_states_viterbi, speaker_states_viterbi = model.predict(X_1, X_2, lengths)
+face_states_viterbi, speaker_states_viterbi = model.predict(S_hat_onehot, F_hat, lengths)
 end_time = time.time()
 print("viterbi解码耗时:", end_time - start_time, "秒")
 
@@ -260,7 +260,7 @@ print("viterbi解码耗时:", end_time - start_time, "秒")
 #     print(f"\n演员 {actor_id}:")
 #     comparison_face_viterbi = np.vstack([
 #         true_states['face_states'][:, actor_id],  # 真实状态
-#         X_2[:, actor_id],                         # 观测状态
+#         F_hat[:, actor_id],                         # 观测状态
 #         face_states_viterbi[:, actor_id]          # Viterbi推断状态
 #     ])
 #     print("真实:", comparison_face_viterbi[0, :])
@@ -272,7 +272,7 @@ print("viterbi解码耗时:", end_time - start_time, "秒")
 # print("真实状态 -> 观测状态 -> Viterbi推断状态")
 # comparison_speaker_viterbi = np.vstack([
 #     true_states['speaker_states'],     # 真实状态
-#     np.argmax(X_1, axis=1),           # 观测状态 (从one-hot转回标签)
+#     np.argmax(S_hat_onehot, axis=1),           # 观测状态 (从one-hot转回标签)
 #     speaker_states_viterbi            # Viterbi推断状态
 # ])
 # print("真实:", comparison_speaker_viterbi[0, :])
@@ -283,10 +283,10 @@ print("viterbi解码耗时:", end_time - start_time, "秒")
 print("\n=== 准确率统计 ===")
 ## 面部状态准确率
 face_acc_viterbi = np.mean(true_states['face_states'] == face_states_viterbi)
-face_acc_observed = np.mean(true_states['face_states'] == X_2)
+face_acc_observed = np.mean(true_states['face_states'] == F_hat)
 ## 说话人状态准确率
 speaker_acc_viterbi = np.mean(true_states['speaker_states'] == speaker_states_viterbi)
-speaker_acc_observed = np.mean(true_states['speaker_states'] == np.argmax(X_1, axis=1))
+speaker_acc_observed = np.mean(true_states['speaker_states'] == np.argmax(S_hat_onehot, axis=1))
 
 print("\n=== 准确率分析 ===")
 print(f"面部状态准确率:")
