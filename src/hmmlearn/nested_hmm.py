@@ -51,6 +51,7 @@ class NestedHMM(_AbstractHMM):
         self._log_trans_speaker = np.zeros((self.n_actors, self.n_actors, self.n_face_states))  # [prev_s, s, f]
         ## 所有可能的面部配置
         self.face_configs = self._enumerate_face_configs()
+        self.face_configs_arr = np.array(self.face_configs) # shape (n_face_states, n_actors)
 
         # 创建监控器
         self.monitor_ = ConvergenceMonitor(tol, n_iter, verbose)
@@ -403,7 +404,6 @@ class NestedHMM(_AbstractHMM):
         """
         n_samples = len(S_hat_onehot)
         stats_updated = stats.copy()
-        face_configs_arr = np.array(self.face_configs)  # shape (n_face_states, n_actors)
         
         # 计算后验概率
         for t in range(n_samples):
@@ -416,7 +416,7 @@ class NestedHMM(_AbstractHMM):
             if t == 0:
                 # 计算人脸初始充分统计量 $\bbE\left[\bbN(F_{\cdot,1,\varrho}=1\vert \btheta^{(s)})\right]$ 中属于第i个片段的部分
                 ## 先对人脸期望计算式中的 $\varrho'$求和，再对人脸期望计算式中的 $f$ 求和
-                stats_updated['face_initial_counts'] += (gamma_faces[:, None] * face_configs_arr).sum(axis=0)
+                stats_updated['face_initial_counts'] += (gamma_faces[:, None] * self.face_configs_arr).sum(axis=0)
                 # 计算说话人初始充分统计量 $\bbE\left[\bbN(F_{\cdot,1,\cdot}=f,S_{\cdot,1}=\varrho\vert \btheta^{(s)})\right] $
                 stats_updated['speaker_initial_counts'] += gamma
             
@@ -434,8 +434,8 @@ class NestedHMM(_AbstractHMM):
                 ## 计算面部转移统计量 $\bbE\left[\bbN(F_{\cdot,\cdot-1,\varrho}=\delta,F_{\cdot,\cdot,\varrho}=\delta' \vert \btheta^{(s)})\right]$
                 face_transition_weights = xi_arr.sum(axis=(1, 3))  # shape: (n_face_states, n_face_states)
                 for actor in range(self.n_actors):  #  人脸期望式中的 $\varrho$
-                    prev_states = face_configs_arr[:, actor]  # shape: (n_face_states,), 人脸期望式中的 $\delta$
-                    curr_states = face_configs_arr[:, actor]  # shape: (n_face_states,), 人脸期望式中的 $\delta'$
+                    prev_states = self.face_configs_arr[:, actor]  # shape: (n_face_states,), 人脸期望式中的 $\delta$
+                    curr_states = self.face_configs_arr[:, actor]  # shape: (n_face_states,), 人脸期望式中的 $\delta'$
                     for prev_state in [0, 1]:
                         for curr_state in [0, 1]:
                             mask = (prev_states[:, None] == prev_state) & (curr_states[None, :] == curr_state)
@@ -451,7 +451,7 @@ class NestedHMM(_AbstractHMM):
             ## 面部发射统计量
             for actor in range(self.n_actors):  # 人脸期望式中的 $\varrho$
                 for face_state in [0, 1]:  # 人脸期望式中的 $\delta$
-                    mask = (face_configs_arr[:, actor] == face_state)
+                    mask = (self.face_configs_arr[:, actor] == face_state)
                     stats_updated['face_emission_counts'][actor, face_state, F_hat[t, actor]] += gamma_faces[mask].sum()
 
         return stats_updated
@@ -518,14 +518,11 @@ class NestedHMM(_AbstractHMM):
         """使用数值优化更新说话人初始参数"""
         def objective(params):
             beta, gamma1 = params[:-1], params[-1]
-            loss = 0.0
-
-            for f_idx, face_config in enumerate(self.face_configs):  # 说话人期望式中的 $f$
-                weights = stats['speaker_initial_counts'][f_idx]  # shape: (n_actors,), 对应说话人期望式中的 $\varrho$
-                mask = (weights > 0)
-                logits = np.array([beta[s] + gamma1 * face_config[s] for s in range(self.n_actors)])  # s 对应 M 步迭代计算式中的 $\varrho'$
-                log_probs = logits - logsumexp(logits)  # log-softmax
-                loss -= np.sum(weights[mask] * log_probs[mask])
+            weights = stats['speaker_initial_counts']   # (n_face_states, n_actors)
+            masks = (weights > 0)
+            logits = beta[None, :] + gamma1*self.face_configs_arr
+            log_probs = logits - logsumexp(logits, axis=1, keepdims=True)   # log-softmax
+            loss = - np.sum(weights[masks] * log_probs[masks])
             
             return loss
         
@@ -546,19 +543,14 @@ class NestedHMM(_AbstractHMM):
         """使用数值优化更新说话人转移参数"""
         def objective(params):
             # 展开A_S矩阵和gamma2
-            A_S_flat = params[:-1].reshape(self.n_actors, self.n_actors)
+            A_S_mat = params[:-1].reshape(self.n_actors, self.n_actors)
             gamma2 = params[-1]
-            
-            loss = 0.0
 
-            for prev_speaker in range(self.n_actors):  # 说话人期望式中的 $\varrho$
-                for f_idx, face_config in enumerate(self.face_configs):  # 说话人期望计算式中的 $f$
-                    weights = stats['speaker_transition_counts'][f_idx, prev_speaker]  # shape: (n_actors,), 对应说话人期望式中的 $\varrho'$
-                    mask = (weights > 0)
-                    logits = np.array([A_S_flat[prev_speaker, s] + gamma2 * face_config[s] 
-                                        for s in range(self.n_actors)])  # s 对应 M 步迭代计算式中的 $\varrho^\ast$
-                    log_probs = logits - logsumexp(logits)
-                    loss -= np.sum(weights[mask] * log_probs[mask])
+            weights = stats['speaker_transition_counts'] # [f_curr, s_prev, s_curr]
+            mask = (weights > 0)
+            logits = A_S_mat[None, :, :] + gamma2 * self.face_configs_arr[:, None, :]   # [n_face_states, n_actors_prev, n_actors_curr(speaker/face)]
+            log_probs = logits - logsumexp(logits, axis=2, keepdims=True)
+            loss = - np.sum(weights[mask] * log_probs[mask])
             
             return loss
         
@@ -612,7 +604,6 @@ class NestedHMM(_AbstractHMM):
         self._check_and_set_n_features(S_hat_onehot, F_hat)
         lengths = self._validate_lengths(S_hat_onehot, lengths)
         n_samples = len(S_hat_onehot)
-        face_configs_arr = np.array(self.face_configs)  # shape (n_face_states, n_actors)
 
         # 初始化输出
         face_posteriors = np.zeros((n_samples, self.n_actors))
@@ -643,7 +634,7 @@ class NestedHMM(_AbstractHMM):
                 ### 计算面部状态的边际后验概率 P(F_{t, \\rho} =1 | 当前集全部观测)
                 for actor in range(self.n_actors):
                     for face_state in [0, 1]:
-                        mask = (face_configs_arr[:, actor] == face_state)
+                        mask = (self.face_configs_arr[:, actor] == face_state)
                         face_posteriors[start_idx + t, actor] += gamma.sum(axis=1)[mask].sum()  # 先对说话人求和，再对符合要求的面部配置求和
                 
                 ### 计算说话人状态的边际后验概率 P(S_t=s | 当前集全部观测)
