@@ -48,10 +48,11 @@ class NestedHMM_full():
         # 添加缓存变量，避免反复计算
         ## 预计算的转移矩阵（在每次EM迭代后需要更新）
         self._log_trans_face = np.zeros((self.n_face_states, self.n_face_states))  # [prev_f, f]
-        self._log_trans_speaker = np.zeros((self.n_actors, self.n_actors, self.n_face_states, self.n_actors))  # [prev_s, s, f, x]
+        self._log_trans_speaker = np.zeros((self.n_actors, self.n_actors, self.n_face_states, self.n_actors+1))  # [prev_s, s, f, x]
         ## 所有可能的面部配置
         self.face_configs = self._enumerate_face_configs()
         self.face_configs_arr = np.array(self.face_configs) # shape (n_face_states, n_actors)
+        self.X_arr = np.vstack([np.eye(self.n_actors), np.zeros((1, self.n_actors))])  # shape (n_actors+1, n_actors), 每行表示一个one-hot编码的协变量配置或全零配置
 
         # 创建监控器
         self.monitor_ = ConvergenceMonitor(tol, n_iter, verbose)
@@ -80,8 +81,8 @@ class NestedHMM_full():
         if not np.all(np.isin(F_hat, [0, 1])):
             raise ValueError("F_hat must contain only binary values (0 or 1)")
 
-        # 检查X_onehot是one-hot编码
-        if not np.allclose(X_onehot.sum(axis=1), 1):
+        # 检查X_onehot是one-hot编码（可以全为零）
+        if not np.all(np.isclose(X_onehot.sum(axis=1), 0) | np.isclose(X_onehot.sum(axis=1), 1)):
             raise ValueError("X_onehot must be one-hot encoded (each row sums to 1)")
 
     def _validate_lengths(self, X, lengths):
@@ -107,6 +108,19 @@ class NestedHMM_full():
                 config.append((i >> j) & 1)
             face_configs.append(tuple(config))
         return face_configs
+
+    def X2index(self, x_onehot):
+        """
+        将协变量的one-hot编码转换为索引
+        - x_onehot: 形状 (n_actors,) 的0-1数组
+        - return: 索引，范围 [0, n_actors]，其中 n_actors 表示全零配置
+        """
+        if np.isclose(x_onehot.sum(), 1):
+            return np.argmax(x_onehot)
+        elif np.isclose(x_onehot.sum(), 0):
+            return self.n_actors  # 全零配置
+        else:
+            raise ValueError("x_onehot must be one-hot encoded or all zeros")
 
     def _init_params(self):
         """初始化嵌套HMM的参数"""
@@ -176,8 +190,8 @@ class NestedHMM_full():
 
         # 说话人状态转移张量: _log_trans_speaker[prev_s, s, f, x]
         for prev_s in range(n_actors):
-            for active_x in range(n_actors):
-                x_config = np.eye(n_actors)[active_x]
+            for active_x in range(n_actors + 1):    # 包括没有活跃说话人的情况
+                x_config = self.X_arr[active_x]
                 self._log_trans_speaker[prev_s, :, :, active_x] = np.array([self._compute_speaker_transition_probs(
                     prev_s, config, x_config) for config in self.face_configs]).T
 
@@ -306,7 +320,7 @@ class NestedHMM_full():
             log_face_emissions, log_speaker_emissions = self._compute_emission_probs(F_hat[t], S_hat_onehot[t])
 
             ## 计算当前时刻所有可能的 (f, \varrho)对应的概率log_probs_arr (f_prev, s_prev, f_curr, s_curr)
-            active_x = np.argmax(X_onehot[t])  # one-hot to index
+            active_x = self.X2index(X_onehot[t])
             log_probs_arr = (prev_fwd_lattice[:, :, None, None] + 
                              self._log_trans_face[:, None, :, None] + 
                              np.transpose(self._log_trans_speaker[:,:,:,active_x], (0, 2, 1))[None, :, :, :] + 
@@ -348,7 +362,7 @@ class NestedHMM_full():
             log_face_emissions, log_speaker_emissions = self._compute_emission_probs(F_hat[t+1], S_hat_onehot[t+1])
 
             ## 计算当前时刻所有可能的 (f, \varrho)对应的概率log_probs_arr (f_curr, s_curr, f_next, s_next)
-            active_x = np.argmax(X_onehot[t+1])  # one-hot to index
+            active_x = self.X2index(X_onehot[t+1])
             log_probs_arr = (next_bwd_lattice[None, None, :, :] + 
                              self._log_trans_face[:, None, :, None] + 
                              np.transpose(self._log_trans_speaker[:,:,:,active_x], (0, 2, 1))[None, :, :, :] +
@@ -420,8 +434,8 @@ class NestedHMM_full():
         return {
             'face_initial_counts': np.zeros(self.n_actors), # [actor], expected count of face state 1 for that actor at initial time
             'face_transition_counts': np.zeros((self.n_actors, 2, 2)),  # [actor, f_prev_state, f_curr_state]
-            'speaker_initial_counts': np.zeros((self.n_face_states, self.n_actors, self.n_actors)),    # [f_init, s_init, x_onehot_init]
-            'speaker_transition_counts': np.zeros((self.n_face_states, self.n_actors, self.n_actors, self.n_actors)),  # [f_curr, s_prev, s_curr, x_onehot_curr]
+            'speaker_initial_counts': np.zeros((self.n_face_states, self.n_actors, self.n_actors + 1)),    # [f_init, s_init, x_onehot_init]
+            'speaker_transition_counts': np.zeros((self.n_face_states, self.n_actors, self.n_actors, self.n_actors + 1)),  # [f_curr, s_prev, s_curr, x_onehot_curr]
             'face_emission_counts': np.zeros((self.n_actors, 2, 2)),    # [actor, face_state, observed_state]
             'speaker_emission_counts': np.zeros((self.n_actors, self.n_actors))  # [speaker_state, observed_speaker]
         }
@@ -441,8 +455,7 @@ class NestedHMM_full():
             gamma_faces = gamma.sum(axis=1)  # shape: (n_face_states,)，提前对speaker求和，方便后续计算面部统计量
 
             # 将协变量从one-hot 转为 index
-            active_x = np.argmax(X_onehot[t])
-            
+            active_x = self.X2index(X_onehot[t])        
             # 累积初始统计量
             if t == 0:
                 # 计算人脸初始充分统计量 $\bbE\left[\bbN(F_{\cdot,1,\varrho}=1\vert \btheta^{(s)})\right]$ 中属于第i个片段的部分
@@ -551,7 +564,7 @@ class NestedHMM_full():
             beta, gamma1, eta1 = np.concatenate(([0.0], params[:-2])), params[-2], params[-1]
             weights = np.transpose(stats['speaker_initial_counts'], axes=(0, 2, 1))   # [f_init, x_onehot_init, s_init]
             masks = (weights > 0)
-            logits = beta[None, None, :] + gamma1*self.face_configs_arr[:, None, :] + eta1*np.eye(self.n_actors)[None, :, :]
+            logits = beta[None, None, :] + gamma1*self.face_configs_arr[:, None, :] + eta1*self.X_arr[None, :, :]
             log_probs = logits - logsumexp(logits, axis=2, keepdims=True)   # log-softmax
             loss = - np.sum(weights[masks] * log_probs[masks])
             
@@ -592,7 +605,7 @@ class NestedHMM_full():
             weights = np.transpose(stats['speaker_transition_counts'], axes=(0, 3, 1, 2)) # [f_curr, x_onehot_curr, s_prev, s_curr]
             mask = (weights > 0)
             # [n_face_states, n_x_states, n_actors_prev, n_actors_curr(speaker/face)]
-            logits = A_S_mat[None, None, :, :] + gamma2 * self.face_configs_arr[:, None, None, :] + eta2 * np.eye(self.n_actors)[None, :, None, :]   
+            logits = A_S_mat[None, None, :, :] + gamma2 * self.face_configs_arr[:, None, None, :] + eta2 * self.X_arr[None, :, None, :]   
             log_probs = logits - logsumexp(logits, axis=3, keepdims=True)
             loss = - np.sum(weights[mask] * log_probs[mask])
             
@@ -796,7 +809,7 @@ class NestedHMM_full():
         
         # 前向传播 t=1到n_frames-1
         for t in range(1, n_frames):
-            active_x = np.argmax(X_onehot[t])  # one-hot to index
+            active_x = self.X2index(X_onehot[t])    # one-hot to index
             ## 计算当前时刻每个隐藏状态对应的观测概率P(F_hat_t | F_t)*P(S_hat_t | S_t)
             log_face_emissions, log_speaker_emissions = self._compute_emission_probs(F_hat[t], S_hat_onehot[t])
 

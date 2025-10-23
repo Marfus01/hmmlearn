@@ -43,7 +43,10 @@ def generate_nested_markov_sequence(params, n_frames, actors):
         # 每个时刻，以一定概率生成活跃说话人
         # 这里假设协变量独立于F，在实际应用中可能有其他生成机制
         x_actor = np.random.choice(actors, size=1, p=x_probs)[0]
-        X_onehot[t] = np.eye(n_actors)[x_actor]
+        if np.random.uniform() > 0.2:
+            X_onehot[t] = np.zeros(n_actors)
+        else:
+            X_onehot[t] = np.eye(n_actors)[x_actor]
     
     # 2. 生成说话人序列 S (依赖于面部出现和协变量X)
     for t in range(n_frames):
@@ -152,10 +155,10 @@ params = {
     
     # 说话人的基础参数
     'beta': np.array([0.1, 0.2, 0.15]),  # 基础偏好
-    'gamma1': 2.0,  # 面部出现对初始说话人的影响
-    'gamma2': 1.5,  # 面部出现对说话人转移的影响
-    'eta1': 2,    # 协变量对初始说话人的影响
-    'eta2': 2,    # 协变量对说话人转移的影响
+    'gamma1': 0.5,  # 面部出现对初始说话人的影响
+    'gamma2': 0.5,  # 面部出现对说话人转移的影响
+    'eta1': 2.5,    # 协变量对初始说话人的影响
+    'eta2': 2.5,    # 协变量对说话人转移的影响
     
     # 说话人转移偏好矩阵 (仅依赖音频的部分)
     'A_S': np.array([
@@ -333,7 +336,7 @@ def run_hmm_analysis(S_hat_onehot, F_hat, X_onehot, lengths, model_name="NestedH
     print(f"  Viterbi准确率: {speaker_acc_viterbi:.3f}")
 
 # 运行分析
-run_hmm_analysis(S_hat_onehot, F_hat, X_onehot=None, lengths=lengths, model_name="NestedHMM", 
-                 true_states=true_states, params=params, n_actors=n_actors, n_iter=50, tol=1e-3, verbose=True)
+# run_hmm_analysis(S_hat_onehot, F_hat, X_onehot=None, lengths=lengths, model_name="NestedHMM", 
+#                  true_states=true_states, params=params, n_actors=n_actors, n_iter=50, tol=1e-3, verbose=True)
 run_hmm_analysis(S_hat_onehot, F_hat, X_onehot, lengths=lengths, model_name="NestedHMM_Full", 
                  true_states=true_states, params=params, n_actors=n_actors, n_iter=50, tol=1e-3, verbose=True)
