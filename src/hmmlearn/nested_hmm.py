@@ -3,8 +3,7 @@ from scipy.special import softmax, logsumexp
 from scipy.optimize import minimize
 from sklearn.utils import check_random_state
 
-from .base import _AbstractHMM, ConvergenceMonitor
-from .utils import normalize, log_normalize
+from .monitor import ConvergenceMonitor
 import time
 
 
@@ -12,7 +11,7 @@ import time
 ### 1. 当处理实际电视剧数据时， U, V 矩阵尺寸较大，有可能导致内存不足。如果出现此类问题，可以先将每季的UV统计量存到本地，然后再读取进行累积
 
 
-class NestedHMM(_AbstractHMM):
+class NestedHMM():
     """
     嵌套隐马尔可夫模型
     
