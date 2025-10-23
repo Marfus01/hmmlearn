@@ -126,6 +126,7 @@ class NestedHMM_full():
         if 'c' in self.init_params:
             # β: 说话人初始概率的logits,不要求和为1
             self.beta_ = random_state.normal(0, 1, self.n_actors)
+            self.beta_ -= self.beta_[0]  # 固定第一个演员的logit为0，作为基准
             
         if 'd' in self.init_params:
             # γ₁: 面部对说话人初始状态的影响
@@ -135,6 +136,7 @@ class NestedHMM_full():
             # A_S: 说话人状态转移矩阵的logits (n_actors, n_actors),不要求和为1
             diag_main = np.diag(random_state.uniform(0.3, 0.7, self.n_actors))
             self.A_S_ = diag_main + (1-diag_main) * random_state.normal(0, 1, (self.n_actors, self.n_actors))
+            self.A_S_ -= np.diag(self.A_S_)[:,None]    # 固定转移到自己的logit为0，作为基准
             
         if 'f' in self.init_params:
             # γ₂: 面部对说话人转移的影响
@@ -346,7 +348,7 @@ class NestedHMM_full():
             log_face_emissions, log_speaker_emissions = self._compute_emission_probs(F_hat[t+1], S_hat_onehot[t+1])
 
             ## 计算当前时刻所有可能的 (f, \varrho)对应的概率log_probs_arr (f_curr, s_curr, f_next, s_next)
-            active_x = np.argmax(X_onehot[t])  # one-hot to index
+            active_x = np.argmax(X_onehot[t+1])  # one-hot to index
             log_probs_arr = (next_bwd_lattice[None, None, :, :] + 
                              self._log_trans_face[:, None, :, None] + 
                              np.transpose(self._log_trans_speaker[:,:,:,active_x], (0, 2, 1))[None, :, :, :] +
@@ -545,8 +547,8 @@ class NestedHMM_full():
 
     def _update_speaker_initial_params(self, stats):
         """使用数值优化更新说话人初始参数"""
-        def objective(params):
-            beta, gamma1, eta1 = params[:-2], params[-2], params[-1]
+        def objective_speaker_initial(params):
+            beta, gamma1, eta1 = np.concatenate(([0.0], params[:-2])), params[-2], params[-1]
             weights = np.transpose(stats['speaker_initial_counts'], axes=(0, 2, 1))   # [f_init, x_onehot_init, s_init]
             masks = (weights > 0)
             logits = beta[None, None, :] + gamma1*self.face_configs_arr[:, None, :] + eta1*np.eye(self.n_actors)[None, :, :]
@@ -556,24 +558,34 @@ class NestedHMM_full():
             return loss
         
         # 初始参数
-        x0 = np.concatenate([self.beta_, self.gamma1_, self.eta1_])
+        x0 = np.concatenate([self.beta_[1:], self.gamma1_, self.eta1_])
+        # print(f"Initial parameters for speaker initial params: {x0}")
+        # print(sum(stats['speaker_initial_counts']>0))
+        # print(stats['speaker_initial_counts'])
 
             
         # 优化
-        result = minimize(objective, x0, method='L-BFGS-B')
+        result = minimize(objective_speaker_initial, x0, method='L-BFGS-B')
         
         if result.success:
-            self.beta_ = result.x[:-2]
+            self.beta_ = np.concatenate(([0.0], result.x[:-2]))
             self.gamma1_ = np.array([result.x[-2]])
             self.eta1_ = np.array([result.x[-1]])
+            obj_init = objective_speaker_initial(x0)
+            obj_final = objective_speaker_initial(result.x)
+            print(f"Initial objective value for speaker initial params: {obj_init:.4f}")
+            print(f"Final objective value for speaker initial params: {obj_final:.4f}")            
         else:
             print("Warning: Speaker initial parameters optimization did not converge.")
 
     def _update_speaker_transition_params(self, stats):
-        """使用数值优化更新说话人转移参数"""
-        def objective(params):
-            # 展开A_S矩阵和gamma2, eta2
-            A_S_mat = params[:-2].reshape(self.n_actors, self.n_actors)
+        """使用数值优化更新说话人转移参数(只优化非对角线元素和gamma2, eta2)"""
+        mask_offdiag = ~np.eye(self.n_actors, dtype=bool)
+
+        def objective_speaker_transition(params):
+            # params: [A_S_offdiag, gamma2, eta2]
+            A_S_mat = np.zeros((self.n_actors, self.n_actors))  # 对角线强制为0
+            A_S_mat[mask_offdiag] = params[:-2]# 从flattend 参数重建A_S矩阵
             gamma2 = params[-2]
             eta2 = params[-1]
             
@@ -586,16 +598,22 @@ class NestedHMM_full():
             
             return loss
         
-        # 初始参数
-        x0 = np.concatenate([self.A_S_.flatten(), self.gamma2_, self.eta2_])
+        # 初始参数：只取A_S_非对角线元素和gamma2, eta2
+        x0 = np.concatenate([self.A_S_[mask_offdiag], self.gamma2_, self.eta2_])    # shape: (n_actors*(n_actors-1) + 2,)
         
         # 优化
-        result = minimize(objective, x0, method='L-BFGS-B')
+        result = minimize(objective_speaker_transition, x0, method='L-BFGS-B')
         
         if result.success:
-            self.A_S_ = result.x[:-2].reshape(self.n_actors, self.n_actors)
+            # 重建A_S_，对角线为0
+            self.A_S_ = np.zeros((self.n_actors, self.n_actors))
+            self.A_S_[mask_offdiag] = result.x[:-2]
             self.gamma2_ = np.array([result.x[-2]])
             self.eta2_ = np.array([result.x[-1]])
+            obj_init = objective_speaker_transition(x0)
+            obj_final = objective_speaker_transition(result.x)
+            print(f"Initial objective value for speaker transition params: {obj_init:.4f}")
+            print(f"Final objective value for speaker transition params: {obj_final:.4f}")
         else:
             print("Warning: Speaker transition parameters optimization did not converge.")
 

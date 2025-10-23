@@ -117,6 +117,7 @@ class NestedHMM():
         if 'c' in self.init_params:
             # β: 说话人初始概率的logits,不要求和为1
             self.beta_ = random_state.normal(0, 1, self.n_actors)
+            self.beta_ -= self.beta_[0]  # 固定第一个演员的logit为0，作为基准
             
         if 'd' in self.init_params:
             # γ₁: 面部对说话人初始状态的影响
@@ -126,6 +127,7 @@ class NestedHMM():
             # A_S: 说话人状态转移矩阵的logits (n_actors, n_actors),不要求和为1
             diag_main = np.diag(random_state.uniform(0.3, 0.7, self.n_actors))
             self.A_S_ = diag_main + (1-diag_main) * random_state.normal(0, 1, (self.n_actors, self.n_actors))
+            self.A_S_ -= np.diag(self.A_S_)[:,None]    # 固定转移到自己的logit为0，作为基准
             
         if 'f' in self.init_params:
             # γ₂: 面部对说话人转移的影响
@@ -515,8 +517,8 @@ class NestedHMM():
 
     def _update_speaker_initial_params(self, stats):
         """使用数值优化更新说话人初始参数"""
-        def objective(params):
-            beta, gamma1 = params[:-1], params[-1]
+        def objective_speaker_initial(params):
+            beta, gamma1 = np.concatenate(([0.0], params[:-1])), params[-1]
             weights = stats['speaker_initial_counts']   # (n_face_states, n_actors)
             masks = (weights > 0)
             logits = beta[None, :] + gamma1*self.face_configs_arr
@@ -526,23 +528,30 @@ class NestedHMM():
             return loss
         
         # 初始参数
-        x0 = np.concatenate([self.beta_, self.gamma1_])
+        x0 = np.concatenate([self.beta_[1:], self.gamma1_])
 
             
         # 优化
-        result = minimize(objective, x0, method='L-BFGS-B')
+        result = minimize(objective_speaker_initial, x0, method='L-BFGS-B')
         
         if result.success:
-            self.beta_ = result.x[:-1]
+            self.beta_ = np.concatenate(([0.0], result.x[:-1]))
             self.gamma1_ = np.array([result.x[-1]])
+            obj_init = objective_speaker_initial(x0)
+            obj_final = objective_speaker_initial(result.x)
+            print(f"Initial objective value for speaker initial params: {obj_init:.4f}")
+            print(f"Final objective value for speaker initial params: {obj_final:.4f}")     
         else:
             print("Warning: Speaker initial parameters optimization did not converge.")
 
     def _update_speaker_transition_params(self, stats):
-        """使用数值优化更新说话人转移参数"""
-        def objective(params):
-            # 展开A_S矩阵和gamma2
-            A_S_mat = params[:-1].reshape(self.n_actors, self.n_actors)
+        """使用数值优化更新说话人转移参数（只优化非对角线元素和gamma2）"""
+        mask_offdiag = ~np.eye(self.n_actors, dtype=bool)
+
+        def objective_speaker_transition(params):
+            # params: [A_S_offdiag, gamma2]
+            A_S_mat = np.zeros((self.n_actors, self.n_actors))  # 对角线强制为0
+            A_S_mat[mask_offdiag] = params[:-1] # 从flattend 参数重建A_S矩阵
             gamma2 = params[-1]
 
             weights = stats['speaker_transition_counts'] # [f_curr, s_prev, s_curr]
@@ -552,16 +561,22 @@ class NestedHMM():
             loss = - np.sum(weights[mask] * log_probs[mask])
             
             return loss
-        
-        # 初始参数
-        x0 = np.concatenate([self.A_S_.flatten(), self.gamma2_])
-        
+
+        # 初始参数：只取A_S_非对角线元素和gamma2
+        x0 = np.concatenate([self.A_S_[mask_offdiag], self.gamma2_])    # shape: (n_actors*(n_actors-1) + 1,)
+
         # 优化
-        result = minimize(objective, x0, method='L-BFGS-B')
-        
+        result = minimize(objective_speaker_transition, x0, method='L-BFGS-B')
+
         if result.success:
-            self.A_S_ = result.x[:-1].reshape(self.n_actors, self.n_actors)
+            # 重建A_S_，对角线为0
+            self.A_S_ = np.zeros((self.n_actors, self.n_actors))
+            self.A_S_[mask_offdiag] = result.x[:-1]
             self.gamma2_ = np.array([result.x[-1]])
+            obj_init = objective_speaker_transition(x0)
+            obj_final = objective_speaker_transition(result.x)
+            print(f"Initial objective value for speaker transition params: {obj_init:.4f}")
+            print(f"Final objective value for speaker transition params: {obj_final:.4f}")            
         else:
             print("Warning: Speaker transition parameters optimization did not converge.")
 

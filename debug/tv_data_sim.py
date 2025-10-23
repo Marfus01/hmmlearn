@@ -157,7 +157,7 @@ params = {
     'eta1': 2,    # 协变量对初始说话人的影响
     'eta2': 2,    # 协变量对说话人转移的影响
     
-    # 说话人转移矩阵 (仅依赖音频的部分)
+    # 说话人转移偏好矩阵 (仅依赖音频的部分)
     'A_S': np.array([
         [0.6, 0.25, 0.15],
         [0.1, 0.7, 0.2],
@@ -178,6 +178,9 @@ params = {
         [0.1, 0.1, 0.8]
     ])
 }
+
+params['beta'] -= params['beta'][0]  # 归一化基线
+params['A_S'] -= np.diag(params['A_S'])[:,None]    # 固定转移到自己的logit为0，作为基准
 
 # 生成多个不同长度的序列
 sequence_lengths = [150, 200, 120, 250, 180]
@@ -331,6 +334,6 @@ def run_hmm_analysis(S_hat_onehot, F_hat, X_onehot, lengths, model_name="NestedH
 
 # 运行分析
 run_hmm_analysis(S_hat_onehot, F_hat, X_onehot=None, lengths=lengths, model_name="NestedHMM", 
-                 true_states=true_states, params=params, n_actors=n_actors, n_iter=20, tol=1e-3, verbose=True)
-# run_hmm_analysis(S_hat_onehot, F_hat, X_onehot, lengths=lengths, model_name="NestedHMM_Full", 
-#                  true_states=true_states, params=params, n_actors=n_actors, n_iter=20, tol=1e-3, verbose=True)
+                 true_states=true_states, params=params, n_actors=n_actors, n_iter=50, tol=1e-3, verbose=True)
+run_hmm_analysis(S_hat_onehot, F_hat, X_onehot, lengths=lengths, model_name="NestedHMM_Full", 
+                 true_states=true_states, params=params, n_actors=n_actors, n_iter=50, tol=1e-3, verbose=True)
