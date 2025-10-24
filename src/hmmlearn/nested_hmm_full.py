@@ -5,7 +5,7 @@ from sklearn.utils import check_random_state
 from functools import partial
 
 from .monitor import ConvergenceMonitor
-import time
+import time, copy
 
 
 ## 内存相关
@@ -83,7 +83,7 @@ class NestedHMM_full():
 
         # 检查X_onehot是one-hot编码（可以全为零）
         if not np.all(np.isclose(X_onehot.sum(axis=1), 0) | np.isclose(X_onehot.sum(axis=1), 1)):
-            raise ValueError("X_onehot must be one-hot encoded (each row sums to 1)")
+            raise ValueError("X_onehot must be one-hot encoded or all zeros (each row sums to 0 or 1)")
 
     def _validate_lengths(self, X, lengths):
         """
@@ -144,7 +144,7 @@ class NestedHMM_full():
             
         if 'd' in self.init_params:
             # γ₁: 面部对说话人初始状态的影响
-            self.gamma1_ = random_state.uniform(0.5, 2.0, 1)
+            self.gamma1_ = random_state.uniform(0.5, 2.0)
             
         if 'e' in self.init_params:
             # A_S: 说话人状态转移矩阵的logits (n_actors, n_actors),不要求和为1
@@ -154,7 +154,7 @@ class NestedHMM_full():
             
         if 'f' in self.init_params:
             # γ₂: 面部对说话人转移的影响
-            self.gamma2_ = random_state.uniform(0.5, 2.0, 1)
+            self.gamma2_ = random_state.uniform(0.5, 2.0)
             
         if 'g' in self.init_params:
             # B_F: 面部识别混淆矩阵 (n_actors, 2, 2), 每行和为1
@@ -171,11 +171,11 @@ class NestedHMM_full():
 
         if 'i' in self.init_params:
             # η1: 协变量X取值为1对说话人初始状态的影响
-            self.eta1_ = random_state.uniform(1, 3, 1)
+            self.eta1_ = random_state.uniform(1, 3)
 
         if 'j' in self.init_params:
             # η2: 协变量X取值为1对说话人转移的影响
-            self.eta2_ = random_state.uniform(1, 3, 1)
+            self.eta2_ = random_state.uniform(1, 3)
 
         self._update_log_transition_matrices()
 
@@ -227,8 +227,8 @@ class NestedHMM_full():
             self._do_mstep(stats, lengths)
             mstep_time = time.time() - start_time
 
-            print(f"E步耗时: {estep_time:.4f}秒")
-            print(f"M步耗时: {mstep_time:.4f}秒")
+            # print(f"E步耗时: {estep_time:.4f}秒")
+            # print(f"M步耗时: {mstep_time:.4f}秒")
 
         return self
 
@@ -276,9 +276,9 @@ class NestedHMM_full():
             
         stats['log_likelihood'] = log_likelihood
         
-        print(f"前向算法总时间: {forward_time:.4f}秒")
-        print(f"后向算法总时间: {backward_time:.4f}秒")
-        print(f"累积统计量更新总时间: {accumulate_time:.4f}秒")
+        # print(f"前向算法总时间: {forward_time:.4f}秒")
+        # print(f"后向算法总时间: {backward_time:.4f}秒")
+        # print(f"累积统计量更新总时间: {accumulate_time:.4f}秒")
         
         return stats
 
@@ -393,6 +393,8 @@ class NestedHMM_full():
         """
         计算所有说话人的初始概率 $\bbP(S_{i,1}=\cdot \vert F_{i,1,\cdot}=f, X_{i,1,\cdot}=x)$ 的对数
         """
+        face_config = np.array(face_config)
+        x_config = np.array(x_config)
         logits = self.beta_ + self.gamma1_ * face_config + self.eta1_ * x_config
         log_probs = logits - logsumexp(logits)  # of shape (n_actors,), 每个元素代表说话人为s的log概率
         return log_probs
@@ -401,6 +403,8 @@ class NestedHMM_full():
         """
         计算在已知上一时刻说话人时，转移到所有说话人的概率 $\bbP(S_{i,t+1}=\cdot \vert S_{i,t}=\varrho',F_{i,t+1,\cdot}=f, X_{i,t+1,\cdot}=x)$ 的对数
         """
+        face_config = np.array(face_config)
+        x_config = np.array(x_config)
         logits = self.A_S_[prev_speaker, :] + self.gamma2_ * face_config + self.eta2_ * x_config
         log_probs = logits - logsumexp(logits)  # of shape (n_actors,), 每个元素代表说话人为s的log概率
         return log_probs
@@ -445,7 +449,7 @@ class NestedHMM_full():
         更新累积充分统计量 stats，以便于后续执行参数更新
         """
         n_samples = len(S_hat_onehot)
-        stats_updated = stats.copy()
+        stats_updated = copy.deepcopy(stats)
         
         # 计算后验概率
         for t in range(n_samples):
@@ -508,6 +512,7 @@ class NestedHMM_full():
             if m_segs > 0:
                 self.alpha_ = stats['face_initial_counts'] / m_segs
                 self.alpha_ = np.clip(self.alpha_, 1e-6, 1-1e-6)  # 避免0概率
+                self.alpha_ /= self.alpha_.sum()
         
         # 更新面部转移矩阵
         if 'b' in self.params:
@@ -517,9 +522,9 @@ class NestedHMM_full():
                     if total > 0:
                         self.A_F_[actor, state] = stats['face_transition_counts'][actor, state] / total
                         self.A_F_[actor, state] = np.clip(self.A_F_[actor, state], 1e-6, 1-1e-6)
+                        self.A_F_[actor, state] /= self.A_F_[actor, state].sum()
                     else:
-                        self.A_F_[actor, state] = np.full(2, 1 / 2)
-                        self.A_F_[actor, state, -1] = 1 - self.A_F_[actor, state, :-1].sum()
+                        self.A_F_[actor, state] = np.ones(2) / 2
                         print(f"Warning: Transition probabilities for actor {actor}, state {state} were not updated due to insufficient data. Reset to uniform distribution.")
         
         # 更新说话人初始概率参数 (beta, gamma1, eta1)
@@ -538,9 +543,9 @@ class NestedHMM_full():
                     if total > 0:
                         self.B_F_[actor, state] = stats['face_emission_counts'][actor, state] / total # row normalization
                         self.B_F_[actor, state] = np.clip(self.B_F_[actor, state], 1e-6, 1-1e-6)
+                        self.B_F_[actor, state] /= self.B_F_[actor, state].sum()
                     else:
-                        self.B_F_[actor, state] = np.full(2, 1 / 2)
-                        self.B_F_[actor, state, -1] = 1 - self.B_F_[actor, state, :-1].sum()
+                        self.B_F_[actor, state] = np.ones(2) / 2
                         print(f"Warning: Emission probabilities for actor {actor}, state {state} were not updated due to insufficient data. Reset to uniform distribution.")
         
         # 更新说话人发射矩阵  
@@ -550,9 +555,9 @@ class NestedHMM_full():
                 if total > 0:
                     self.B_S_[speaker] = stats['speaker_emission_counts'][speaker] / total  # row normalization
                     self.B_S_[speaker] = np.clip(self.B_S_[speaker], 1e-6, 1-1e-6)
+                    self.B_S_[speaker] /= self.B_S_[speaker].sum()
                 else:
-                    self.B_S_[speaker] = np.full(self.n_actors, 1 / self.n_actors)
-                    self.B_S_[speaker, -1] = 1 - self.B_S_[speaker, :-1].sum()
+                    self.B_S_[speaker] = np.ones(self.n_actors) / self.n_actors
                     print(f"Warning: Emission probabilities for speaker {speaker} were not updated due to insufficient data. Reset to uniform distribution.")
 
         # 更新预计算的对数转移矩阵
@@ -571,7 +576,7 @@ class NestedHMM_full():
             return loss
         
         # 初始参数
-        x0 = np.concatenate([self.beta_[1:], self.gamma1_, self.eta1_])
+        x0 = np.concatenate([self.beta_[1:], np.array([self.gamma1_, self.eta1_])])
         # print(f"Initial parameters for speaker initial params: {x0}")
         # print(sum(stats['speaker_initial_counts']>0))
         # print(stats['speaker_initial_counts'])
@@ -582,12 +587,12 @@ class NestedHMM_full():
         
         if result.success:
             self.beta_ = np.concatenate(([0.0], result.x[:-2]))
-            self.gamma1_ = np.array([result.x[-2]])
-            self.eta1_ = np.array([result.x[-1]])
-            obj_init = objective_speaker_initial(x0)
-            obj_final = objective_speaker_initial(result.x)
-            print(f"Initial objective value for speaker initial params: {obj_init:.4f}")
-            print(f"Final objective value for speaker initial params: {obj_final:.4f}")            
+            self.gamma1_ = result.x[-2]
+            self.eta1_ = result.x[-1]
+            # obj_init = objective_speaker_initial(x0)
+            # obj_final = objective_speaker_initial(result.x)
+            # print(f"Initial objective value for speaker initial params: {obj_init:.4f}")
+            # print(f"Final objective value for speaker initial params: {obj_final:.4f}")            
         else:
             print("Warning: Speaker initial parameters optimization did not converge.")
 
@@ -612,7 +617,7 @@ class NestedHMM_full():
             return loss
         
         # 初始参数：只取A_S_非对角线元素和gamma2, eta2
-        x0 = np.concatenate([self.A_S_[mask_offdiag], self.gamma2_, self.eta2_])    # shape: (n_actors*(n_actors-1) + 2,)
+        x0 = np.concatenate([self.A_S_[mask_offdiag], np.array([self.gamma2_, self.eta2_])])    # shape: (n_actors*(n_actors-1) + 2,)
         
         # 优化
         result = minimize(objective_speaker_transition, x0, method='L-BFGS-B')
@@ -621,12 +626,12 @@ class NestedHMM_full():
             # 重建A_S_，对角线为0
             self.A_S_ = np.zeros((self.n_actors, self.n_actors))
             self.A_S_[mask_offdiag] = result.x[:-2]
-            self.gamma2_ = np.array([result.x[-2]])
-            self.eta2_ = np.array([result.x[-1]])
-            obj_init = objective_speaker_transition(x0)
-            obj_final = objective_speaker_transition(result.x)
-            print(f"Initial objective value for speaker transition params: {obj_init:.4f}")
-            print(f"Final objective value for speaker transition params: {obj_final:.4f}")
+            self.gamma2_ = result.x[-2]
+            self.eta2_ = result.x[-1]
+            # obj_init = objective_speaker_transition(x0)
+            # obj_final = objective_speaker_transition(result.x)
+            # print(f"Initial objective value for speaker transition params: {obj_init:.4f}")
+            # print(f"Final objective value for speaker transition params: {obj_final:.4f}")
         else:
             print("Warning: Speaker transition parameters optimization did not converge.")
 

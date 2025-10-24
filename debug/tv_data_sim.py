@@ -155,8 +155,8 @@ params = {
     
     # 说话人的基础参数
     'beta': np.array([0.1, 0.2, 0.15]),  # 基础偏好
-    'gamma1': 0.5,  # 面部出现对初始说话人的影响
-    'gamma2': 0.5,  # 面部出现对说话人转移的影响
+    'gamma1': 1,  # 面部出现对初始说话人的影响
+    'gamma2': 1,  # 面部出现对说话人转移的影响
     'eta1': 2.5,    # 协变量对初始说话人的影响
     'eta2': 2.5,    # 协变量对说话人转移的影响
     
@@ -235,6 +235,7 @@ for actor in actors:
 # 创建和训练模型
 from hmmlearn.nested_hmm import NestedHMM
 from hmmlearn.nested_hmm_full import NestedHMM_full
+from hmmlearn.hmm_X import HMM_X
 import time
 
 def run_hmm_analysis(S_hat_onehot, F_hat, X_onehot, lengths, model_name="NestedHMM", 
@@ -258,54 +259,74 @@ def run_hmm_analysis(S_hat_onehot, F_hat, X_onehot, lengths, model_name="NestedH
     elif model_name == "NestedHMM_Full":
         model = NestedHMM_full(n_actors=n_actors, n_iter=n_iter, tol=tol, verbose=verbose)
         model.fit(S_hat_onehot, F_hat, X_onehot, lengths)
+    elif model_name == "HMM_X":
+        model = HMM_X(n_actors=n_actors, n_iter=n_iter, tol=tol, verbose=verbose)
+        model.fit(S_hat_onehot, X_onehot, lengths)
 
     end_time = time.time()
     print("训练结束时间:", time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(end_time)))
     print("训练耗时:", end_time - start_time, "秒")
 
     # # 对比模型参数的真实值和拟合值
-    # print("\n=== 学习到的参数对比 ===")
-    # print("α (面部出现初始概率):")
-    # print("真实:", np.round(params['alpha'], 3))
-    # print("学习:", np.round(model.alpha_, 3))
+    print("\nβ (说话人初始偏好):")
+    print("真实:", np.round(params['beta'], 3))
+    print("学习:", np.round(model.beta_, 3))
 
-    # print("\nβ (说话人初始偏好):")
-    # print("真实:", np.round(params['beta'], 3))
-    # print("学习:", np.round(model.beta_, 3))
+    print("\nA_S (说话人转移矩阵):")
+    print("真实:", np.round(params['A_S'], 3))
+    print("学习:", np.round(model.A_S_, 3))
 
-    # print("\nγ1 (面部对说话人初始影响):")
-    # print("真实:", np.round(params['gamma1'], 3))
-    # print("学习:", np.round(model.gamma1_, 3))
+    print("\nB_S (说话人识别混淆矩阵):")
+    print("真实:", np.round(params['B_S'], 3))
+    print("学习:", np.round(model.B_S_, 3))
 
-    # print("\nγ2 (面部对说话人转移影响):")
-    # print("真实:", np.round(params['gamma2'], 3))
-    # print("学习:", np.round(model.gamma2_, 3))
 
-    # print("\nA_F (面部转移矩阵):")
-    # for i in range(n_actors):
-    #     print(f"演员{i} 真实:", np.round(params['A_F'][i], 3))
-    #     print(f"演员{i} 学习:", np.round(model.A_F_[i], 3))
+    if model_name == "NestedHMM" or model_name == "NestedHMM_Full":
+        # print("\n=== 学习到的参数对比 ===")
+        # print("α (面部出现初始概率):")
+        # print("真实:", np.round(params['alpha'], 3))
+        # print("学习:", np.round(model.alpha_, 3))
 
-    # print("\nA_S (说话人转移矩阵):")
-    # print("真实:", np.round(params['A_S'], 3))
-    # print("学习:", np.round(model.A_S_, 3))
+        # print("\nA_F (面部转移矩阵):")
+        # for i in range(n_actors):
+        #     print(f"演员{i} 真实:", np.round(params['A_F'][i], 3))
+        #     print(f"演员{i} 学习:", np.round(model.A_F_[i], 3))
 
-    # print("\nB_F (面部识别混淆矩阵):")
-    # for i in range(n_actors):
-    #     print(f"演员{i} 真实:", np.round(params['B_F'][i], 3))
-    #     print(f"演员{i} 学习:", np.round(model.B_F_[i], 3))
+        # print("\nB_F (面部识别混淆矩阵):")
+        # for i in range(n_actors):
+        #     print(f"演员{i} 真实:", np.round(params['B_F'][i], 3))
+        #     print(f"演员{i} 学习:", np.round(model.B_F_[i], 3))
+        
+        print("\nγ1 (面部对说话人初始影响):")
+        print("真实:", np.round(params['gamma1'], 3))
+        print("学习:", np.round(model.gamma1_, 3))
 
-    # print("\nB_S (说话人识别混淆矩阵):")
-    # print("真实:", np.round(params['B_S'], 3))
-    # print("学习:", np.round(model.B_S_, 3))
+        print("\nγ2 (面部对说话人转移影响):")
+        print("真实:", np.round(params['gamma2'], 3))
+        print("学习:", np.round(model.gamma2_, 3))
+
+
+    if model_name == "NestedHMM_Full" or model_name == "HMM_X":
+        print("\nη1 (协变量对说话人初始影响):")
+        print("真实:", np.round(params['eta1'], 3))
+        print("学习:", np.round(model.eta1_, 3))
+
+        print("\nη2 (协变量对说话人转移影响):")
+        print("真实:", np.round(params['eta2'], 3))
+        print("学习:", np.round(model.eta2_, 3))
 
     # 计算后验概率
     print("\n=== 计算后验概率 ===")
     if model_name == "NestedHMM":
         pred_probs = model.predict_proba(S_hat_onehot, F_hat, lengths)
+        print(pred_probs['joint_states'][-1])
     elif model_name == "NestedHMM_Full":
         pred_probs = model.predict_proba(S_hat_onehot, F_hat, X_onehot, lengths)
-    print(pred_probs['joint_states'][-1])
+        print(pred_probs['joint_states'][-1])
+    elif model_name == "HMM_X":
+        pred_probs = model.predict_proba(S_hat_onehot, X_onehot, lengths)
+        print(pred_probs['speaker_states'][-1])
+    
 
     # viterbi 解码结果
     print("\n=== Viterbi 解码结果 ===")
@@ -314,29 +335,35 @@ def run_hmm_analysis(S_hat_onehot, F_hat, X_onehot, lengths, model_name="NestedH
         face_states_viterbi, speaker_states_viterbi = model.predict(S_hat_onehot, F_hat, lengths)
     elif model_name == "NestedHMM_Full":
         face_states_viterbi, speaker_states_viterbi = model.predict(S_hat_onehot, F_hat, X_onehot, lengths)
+    elif model_name == "HMM_X":
+        speaker_states_viterbi = model.predict(S_hat_onehot, X_onehot, lengths)
     end_time = time.time()
     print("viterbi解码耗时:", end_time - start_time, "秒")
 
     # 计算准确率
     print("\n=== 准确率统计 ===")
     ## 面部状态准确率
-    face_acc_viterbi = np.mean(true_states['face_states'] == face_states_viterbi)
-    face_acc_observed = np.mean(true_states['face_states'] == F_hat)
+    if model_name == "NestedHMM" or model_name == "NestedHMM_Full":
+        face_acc_viterbi = np.mean(true_states['face_states'] == face_states_viterbi)
+        face_acc_observed = np.mean(true_states['face_states'] == F_hat)
     ## 说话人状态准确率
     speaker_acc_viterbi = np.mean(true_states['speaker_states'] == speaker_states_viterbi)
     speaker_acc_observed = np.mean(true_states['speaker_states'] == np.argmax(S_hat_onehot, axis=1))
 
     print("\n=== 准确率分析 ===")
-    print(f"面部状态准确率:")
-    print(f"  观测准确率: {face_acc_observed:.3f}")
-    print(f"  Viterbi准确率: {face_acc_viterbi:.3f}")
+    if model_name == "NestedHMM" or model_name == "NestedHMM_Full":    
+        print(f"面部状态准确率:")
+        print(f"  观测准确率: {face_acc_observed:.3f}")
+        print(f"  Viterbi准确率: {face_acc_viterbi:.3f}")
 
     print(f"说话人状态准确率:")
     print(f"  观测准确率: {speaker_acc_observed:.3f}")
     print(f"  Viterbi准确率: {speaker_acc_viterbi:.3f}")
 
 # 运行分析
-# run_hmm_analysis(S_hat_onehot, F_hat, X_onehot=None, lengths=lengths, model_name="NestedHMM", 
-#                  true_states=true_states, params=params, n_actors=n_actors, n_iter=50, tol=1e-3, verbose=True)
+run_hmm_analysis(S_hat_onehot, F_hat, X_onehot=None, lengths=lengths, model_name="NestedHMM", 
+                 true_states=true_states, params=params, n_actors=n_actors, n_iter=50, tol=1e-3, verbose=True)
 run_hmm_analysis(S_hat_onehot, F_hat, X_onehot, lengths=lengths, model_name="NestedHMM_Full", 
+                 true_states=true_states, params=params, n_actors=n_actors, n_iter=50, tol=1e-3, verbose=True)
+run_hmm_analysis(S_hat_onehot, F_hat=None, X_onehot=X_onehot, lengths=lengths, model_name="HMM_X", 
                  true_states=true_states, params=params, n_actors=n_actors, n_iter=50, tol=1e-3, verbose=True)
