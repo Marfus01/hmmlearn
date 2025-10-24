@@ -1,17 +1,6 @@
 待办：
-1. 类定义中加入AVD信息✅正确性待验证
-2. 加入对eta参数大小的约束
-3. 加入对X某列全为0的处理，以及仿真数据中随机将一些列设为全0
+1. 加入设置eta1=eta2, gamma1=gamma2的接口，这在集数相对少、说话人数量相对多时实用。
+2. 将eta, gamma设置为向量，使得不同人脸/active speaker face出现的影响不同
+3. 加入约束eta参数大小的接口（L-BFGS-B支持添加约束）；
+4. 人脸 accuracy 计算
 
-引入active speaker face的识别结果作为协变量X后，说话人状态初始概率、转移概率的统计模型如下：
-协变量 X 是完全可观测的，形如(n_total_samples, n_actors)的0-1 np.array，在指定时刻（也即X的指定行），如果X中某些列取值为1，则当前时刻的说话人更有可能与这些列对应。请注意，X中行、列的含义与S_hat_onehot，F_hat都是对应的。
-上述直觉通过引入参数 eta1, eta2实现，具体而言 new model for $\bbeta_\omega$ and $\bA_\omega$ in \eqref{eq:SPNHMM-3} is to specify $\omega_{i,t}=F_{i,t,S_{i,t}}$ and let
-\begin{align}
-\label{eq:SPHMM-S|F-a}
-\bbP(S_{i,1}\vert\bF_{i,1,\cdot}, X_{i,1,\cdot})
-\propto& \exp\big(\beta_{S_{i,1}}+\gamma_1\cdot F_{i,1,S_{i,1}}+\eta_1\cdot X_{i,1,S_{i,1}}\big),\\
-\label{eq:SPHMM-S|F-b}
-\bbP(S_{i,t}\vert S_{i,t-1};\bF_{i,t,\cdot}, X_{i,t,\cdot})
-\propto&\exp\big(\bA_S(S_{i,t-1},S_{i,t})+\gamma_2\cdot F_{i,t,S_{i,t}}+\eta_2\cdot X_{i,t,S_{i,t}}\big),
-\end{align}
-其他环节不变。上述模型对应的概率是 given F, X 下， S的条件概率，故归一化需要在给定F, X时，对 S进行。
