@@ -239,7 +239,8 @@ from hmmlearn.hmm_X import HMM_X
 import time
 
 def run_hmm_analysis(S_hat_onehot, F_hat, X_onehot, lengths, model_name="NestedHMM", 
-                     true_states=true_states, params=params, n_actors=3, n_iter=10, tol=1e-3, verbose=True):
+                     true_states=true_states, params=params, n_actors=3, n_iter=10, tol=1e-3, 
+                     verbose=True, equal_influence=False):
     """
     通用HMM分析流程：模型选择、拟合、后验概率、解码、准确率统计
     参数:
@@ -260,7 +261,7 @@ def run_hmm_analysis(S_hat_onehot, F_hat, X_onehot, lengths, model_name="NestedH
         model = NestedHMM_full(n_actors=n_actors, n_iter=n_iter, tol=tol, verbose=verbose)
         model.fit(S_hat_onehot, F_hat, X_onehot, lengths)
     elif model_name == "HMM_X":
-        model = HMM_X(n_actors=n_actors, n_iter=n_iter, tol=tol, verbose=verbose)
+        model = HMM_X(n_actors=n_actors, n_iter=n_iter, tol=tol, verbose=verbose, equal_influence=equal_influence)
         model.fit(S_hat_onehot, X_onehot, lengths)
 
     end_time = time.time()
@@ -366,4 +367,5 @@ run_hmm_analysis(S_hat_onehot, F_hat, X_onehot=None, lengths=lengths, model_name
 run_hmm_analysis(S_hat_onehot, F_hat, X_onehot, lengths=lengths, model_name="NestedHMM_Full", 
                  true_states=true_states, params=params, n_actors=n_actors, n_iter=50, tol=1e-3, verbose=True)
 run_hmm_analysis(S_hat_onehot, F_hat=None, X_onehot=X_onehot, lengths=lengths, model_name="HMM_X", 
-                 true_states=true_states, params=params, n_actors=n_actors, n_iter=50, tol=1e-3, verbose=True)
+                 true_states=true_states, params=params, n_actors=n_actors, n_iter=50, tol=1e-3, 
+                 verbose=True, equal_influence=True)
