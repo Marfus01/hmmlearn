@@ -240,7 +240,7 @@ import time
 
 def run_hmm_analysis(S_hat_onehot, F_hat, X_onehot, lengths, model_name="NestedHMM", 
                      true_states=true_states, params=params, n_actors=3, n_iter=10, tol=1e-3, 
-                     verbose=True, equal_influence=False):
+                     verbose=True, equal_influence=False, B_S_diag_min=None, B_F_diag_min=None):
     """
     通用HMM分析流程：模型选择、拟合、后验概率、解码、准确率统计
     参数:
@@ -256,13 +256,13 @@ def run_hmm_analysis(S_hat_onehot, F_hat, X_onehot, lengths, model_name="NestedH
 
     if model_name == "NestedHMM":
         model = NestedHMM(n_actors=n_actors, n_iter=n_iter, tol=tol, verbose=verbose)
-        model.fit(S_hat_onehot, F_hat, lengths)
+        model.fit(S_hat_onehot, F_hat, B_S_diag_min, B_F_diag_min, lengths)
     elif model_name == "NestedHMM_Full":
         model = NestedHMM_full(n_actors=n_actors, n_iter=n_iter, tol=tol, verbose=verbose)
-        model.fit(S_hat_onehot, F_hat, X_onehot, lengths)
+        model.fit(S_hat_onehot, F_hat, X_onehot, B_S_diag_min, B_F_diag_min, lengths)
     elif model_name == "HMM_X":
         model = HMM_X(n_actors=n_actors, n_iter=n_iter, tol=tol, verbose=verbose, equal_influence=equal_influence)
-        model.fit(S_hat_onehot, X_onehot, lengths)
+        model.fit(S_hat_onehot, X_onehot, B_S_diag_min, lengths)
 
     end_time = time.time()
     print("训练结束时间:", time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(end_time)))
@@ -362,6 +362,7 @@ def run_hmm_analysis(S_hat_onehot, F_hat, X_onehot, lengths, model_name="NestedH
     print(f"  Viterbi准确率: {speaker_acc_viterbi:.3f}")
 
 # 运行分析
+print("\n\n=== 开始混淆矩阵无约束的HMM分析 ===")
 run_hmm_analysis(S_hat_onehot, F_hat, X_onehot=None, lengths=lengths, model_name="NestedHMM", 
                  true_states=true_states, params=params, n_actors=n_actors, n_iter=50, tol=1e-3, verbose=True)
 run_hmm_analysis(S_hat_onehot, F_hat, X_onehot, lengths=lengths, model_name="NestedHMM_Full", 
@@ -369,3 +370,13 @@ run_hmm_analysis(S_hat_onehot, F_hat, X_onehot, lengths=lengths, model_name="Nes
 run_hmm_analysis(S_hat_onehot, F_hat=None, X_onehot=X_onehot, lengths=lengths, model_name="HMM_X", 
                  true_states=true_states, params=params, n_actors=n_actors, n_iter=50, tol=1e-3, 
                  verbose=True, equal_influence=True)
+print("\n\n=== 开始混淆矩阵对角线有下限约束的HMM分析 ===")
+run_hmm_analysis(S_hat_onehot, F_hat, X_onehot=None, lengths=lengths, model_name="NestedHMM", 
+                 true_states=true_states, params=params, n_actors=n_actors, 
+                 n_iter=50, tol=1e-3, verbose=True, B_S_diag_min=0.7, B_F_diag_min=0.8)
+run_hmm_analysis(S_hat_onehot, F_hat, X_onehot, lengths=lengths, model_name="NestedHMM_Full", 
+                 true_states=true_states, params=params, n_actors=n_actors, 
+                 n_iter=50, tol=1e-3, verbose=True, B_S_diag_min=0.7, B_F_diag_min=0.8)
+run_hmm_analysis(S_hat_onehot, F_hat=None, X_onehot=X_onehot, lengths=lengths, model_name="HMM_X", 
+                 true_states=true_states, params=params, n_actors=n_actors, 
+                 n_iter=50, tol=1e-3, verbose=True, B_S_diag_min=0.7, B_F_diag_min=0.8)
